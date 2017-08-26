@@ -1,7 +1,7 @@
 ---
 layout: page
 title: Education
-permalink: /Education/
+permalink: /education/
 ---
 
 I am one of New York University's class of 2020.
