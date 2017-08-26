@@ -6,7 +6,7 @@ permalink: /SaplingStudios/
 
 SaplingStudios is my studio.
 
-~These are some details about that~
+~More details soon~
 
 For more details, please visit [that website][SaplingStudiosWeb], or checkout [that GitHub][SaplingStudiosGit].
 
