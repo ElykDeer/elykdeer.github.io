@@ -15,4 +15,4 @@ On this website you can find...
  - [An overflow of my extra-curriculars](/osiris/).
  - And [information about my personal projects](/SaplingStudios/).
 
- If you have any questions at all or just want to chat, please feel free to contact me with either of the emails below.
+ If you have any questions or just want to chat, please feel free to contact me with either of the emails below.
