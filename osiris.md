@@ -1,5 +1,5 @@
 ---
-layout: page
+layout: blogPage
 title: OSIRIS
 permalink: /osiris/
 ---
