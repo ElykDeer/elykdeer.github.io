@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="{{ page.lang | default: site.lang | default: "en" }}">
+
+  {% include head.html %}
+
+  <body>
+
+    {% include header.html %}
+
+    <main class="page-content" aria-label="Content">
+      <div class="wrapper">
+
+        {{ content }}
+
+        <table style="width:100%">
+          <tr>
+            <th>My Projects</th>
+            <th></th>
+            <th>About Me</th>
+          </tr>
+
+          <tr>
+            <th> <a href="/projects/"><img src="/assets/projects.png" height=250 width=250 /></a> </th>
+            <th>Or</th>
+            <th> <a href="/aboutme/"><img src="/assets/aboutme.png" height=250 width=250 /></a> </th>
+          </tr>
+        </table>
+
+      </div>
+    </main>
+
+    {% include footer.html %}
+
+  </body>
+
+</html>
+
+
+<img src=""
