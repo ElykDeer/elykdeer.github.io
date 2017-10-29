@@ -73,48 +73,77 @@ Trace.prototype.update = function () {
         dx = this.x - x,
         dy = this.y - y;
 
-    var velX = Math.cos(this.angle) * this.speed,
-        velY = Math.sin(this.angle) * this.speed,
-        checkPointX = this.x + (Math.cos(this.angle) * 8),
-        checkPointY = this.y + (Math.sin(this.angle) * 8),
-        imageData = ctx.getImageData(checkPointX, checkPointY, 3, 3),
-        pxlData = imageData.data,
-        collision = false;
+    // if its greater than .01 keep moving
+    if (Math.random() > 0.01) {
+        var velX = Math.cos(this.angle) * this.speed,
+            velY = Math.sin(this.angle) * this.speed,
+            checkPointX = this.x + (Math.cos(this.angle) * 8),
+            checkPointY = this.y + (Math.sin(this.angle) * 8),
+            imageData = ctx.getImageData(checkPointX, checkPointY, 3, 3),
+            pxlData = imageData.data,
+            collision = false;
 
-    // check if its in bounds.
-    if (checkPointX > 0 && checkPointX < width && checkPointY > 0 && checkPointY < height) {
-        //check if the point in front is clear or not.
-        for (var i = 0, n = pxlData.length; i < n; i += 4) {
-            var alpha = imageData.data[i + 3];
-            if (alpha !== 0) {
-                collision = true;
-                break;
+        // check if its in bounds.
+        if (checkPointX > 0 && checkPointX < width && checkPointY > 0 && checkPointY < height) {
+            //check if the point in front is clear or not.
+            // for (var i = 0, n = 1; i < n; i += 4) {
+            for (var i = 0, n = pxlData.length; i < n; i += 4) {
+                var alpha = imageData.data[i + 3];
+
+                if (alpha !== 0) {
+                    collision = true;
+                    break;
+                }
+            }
+
+        } else {
+            collision = true;
+        }
+
+        // no collision keep moving
+        if (!collision) {
+            this.trapCount = 0;
+            this.x += velX;
+            this.y += velY;
+        } else {
+            // collision, assume its not the end
+            this.trapCount++;
+            this.angle -= 45 * (Math.PI / 180);
+
+            // line is fully trapped make sure to draw an arc and start a new trace.
+            if (this.trapCount >= 7) {
+                this.live = false;
+
+                if (traces.length < settings.totalTraces) {
+                    traces.push(new Trace({
+                        cX: 0,
+                        cY: 0
+                    }));
+                }
+            }
+
+            if (Math.sqrt(dx * dx + dy * dy) > 4) {
+                this.points.push({
+                    x: this.x,
+                    y: this.y
+                });
+                this.lastPoint = this.points[this.points.length - 1];
+            } else {
+                this.trapCount++;
+                this.x = this.lastPoint.x;
+                this.y = this.lastPoint.y;
             }
         }
     } else {
-        collision = true;
-    }
-
-    // no collision keep moving
-    if (!collision) {
-        this.trapCount = 0;
-        this.x += velX;
-        this.y += velY;
-    } else {
-        // collision, assume its not the end
-        this.trapCount++;
-        this.angle -= 45 * (Math.PI / 180);
-        // line is fully trapped make sure to draw an arc and start a new trace.
-        if (this.trapCount >= 7) {
+        // small chance we might just stop altogether.
+        if (Math.random() > 0.9) {
             this.live = false;
-
-            if (traces.length < settings.totalTraces) {
-                traces.push(new Trace({
-                    cX: 0,
-                    cY: 0
-                }));
-            }
         }
+
+        // no collision clear any prev trap checks, change the direction and continue on.
+        this.trapCount = 0;
+        this.angle += 45 * (Math.PI / 180);
+
         if (Math.sqrt(dx * dx + dy * dy) > 4) {
             this.points.push({
                 x: this.x,
@@ -122,7 +151,6 @@ Trace.prototype.update = function () {
             });
             this.lastPoint = this.points[this.points.length - 1];
         } else {
-            this.trapCount++;
             this.x = this.lastPoint.x;
             this.y = this.lastPoint.y;
         }
@@ -130,7 +158,6 @@ Trace.prototype.update = function () {
 };
 
 Trace.prototype.render = function () {
-  if (this.live) {
     ctx.beginPath();
     ctx.moveTo(this.points[0].x, this.points[0].y);
 
@@ -153,7 +180,6 @@ Trace.prototype.render = function () {
         ctx.fill();
         ctx.stroke();
     }
-  }
 };
 
 // init
