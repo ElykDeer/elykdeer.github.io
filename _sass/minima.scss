@@ -48,30 +48,43 @@ $on-laptop:        800px !default;
   "minima/syntax-highlighting"
 ;
 
+#projectsImage:hover + #circuitCanvas{
+  opacity: 1.0;
+  filter: alpha(opacity=100);
+}
+#aboutmeImage:hover + .heartBeatSVG{
+  opacity: 1.0;
+  filter: alpha(opacity=100);
+}
+
 //Circuit
 canvas {
   position:absolute;
   top:1%;
   left:2.5%;
   z-index:-1;
+  opacity: 0.0;
+  filter: alpha(opacity=0);
+  transition: opacity .5s ease-in;
 }
 
 //Heartbeat
-#heartBeatSVG {
-  opacity: 0;
-  filter: alpha(opacity=0);
+.heartBeatSVG {
   position:absolute;
-  top:15%;
+  top:40%;
   left:0%;
   z-index:-1;
   width:100vw;
   height:100vh;
   max-width: 100%;
+  opacity: 0.0;
+  filter: alpha(opacity=0);
+  transition: opacity .5s ease-in;
 }
 #beatline {
   stroke-width:2;
-  stroke-dasharray:810, 1800;
-  animation: heartbeat 5s linear infinite;
+  stroke-dasharray: 810, 1800;
+  animation: heartbeat 4.5s linear infinite;
   stroke:#ff0000;
   filter:url(#glow);
 }
@@ -79,32 +92,3 @@ canvas {
   from {stroke-dashoffset: 2610;}
   to {stroke-dashoffset: 0;}
 }
-
-#centerTable {
-  display: flex;
-  justify-content: center;
-}
-
-#projectAnimation {
-    opacity: 1.0;
-}
-
-/*
-img#projectsImage ~ div#projectAnimation {
-    opacity: 0.0;
-    filter: alpha(opacity=0);
-}
-img#projectsImage:hover ~ div#projectAnimation {
-    opacity: 1.0;
-    filter: alpha(opacity=100);
-}
-
-.aboutmeImage ~ #aboutmeAnimation{
-    opacity: 0.0;
-    filter: alpha(opacity=0);
-}
-.aboutmeImage:hover ~ #aboutmeAnimation{
-    opacity: 1.0;
-    filter: alpha(opacity=100);
-}
-*/
