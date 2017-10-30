@@ -35,7 +35,7 @@ var canvas = document.getElementById("circuitCanvas"),
         traceColor: "#ffe99b",
         traceFill: "#000000",
         startTraces : 50,
-        totalTraces : 0,
+        totalTraces : 200,
         standard: {
             background: "#0D4D2B",
             traceColor: "#ffe99b",

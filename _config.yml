@@ -31,8 +31,7 @@ plugins:
 
 header_pages:
  - aboutme.md
- - education.md
- - osiris.md
+ - projects.md
  - saplingstudios.md
 
 # Exclude from processing.

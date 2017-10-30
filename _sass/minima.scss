@@ -92,3 +92,24 @@ canvas {
   from {stroke-dashoffset: 2610;}
   to {stroke-dashoffset: 0;}
 }
+
+.aside{
+  content: "";
+  display: table;
+  clear: both;
+  width:100%;
+}
+
+.left-aside{
+  float:left;
+  position:relative;
+  left:5vw;
+  width:10vw;
+}
+
+.right-aside{
+  float:left;
+  position:relative;
+  left:15vw;
+  max-width:66vw;
+}
