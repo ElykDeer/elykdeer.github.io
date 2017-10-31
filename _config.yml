@@ -32,7 +32,7 @@ plugins:
 header_pages:
  - aboutme.md
  - projects.md
- - saplingstudios.md
+# Let's hide this for now...# - saplingstudios.md
 
 # Exclude from processing.
 # The following items will not be processed, by default. Create a custom list

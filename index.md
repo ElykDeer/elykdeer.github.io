@@ -13,7 +13,7 @@ layout: home
 
 {::options parse_block_html="true" /}
 <div style="min-height:75vh;">
-  <table style="align:center;width:100%;min-height:5vh;">
+  <table style="align:center;width:100%;">
     <tr>
       <th>Me</th>
       <th> </th>

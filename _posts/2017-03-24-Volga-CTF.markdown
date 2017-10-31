@@ -1,7 +1,0 @@
----
-layout: post
-title: "iCTF"
-date: 2017-03-24 15:00:00 -0000
-categories: competition
-place: 50
----
