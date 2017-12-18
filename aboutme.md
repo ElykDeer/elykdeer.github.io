@@ -27,7 +27,7 @@ sections:
 {: style="height:2.5vh;"}
 
 ## Awards
-
+| 2017 | | - | | 1st Place - OSIRIS Lab’s/NYUSEC's 'HackNight' Capture The Flag Competition, New York University, New York, NY |
 | 2017 | | - | | Nick Russo Nominee, New York University, New York, NY |
 | 2016 | | - | | Academic Award In Mathematics, Interlochen Arts Academy, Interlochen, MI |
 | 2016 | | - | | Outstanding Student Of The Week, The Rotary Club, Traverse City, MI |
