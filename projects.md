@@ -30,9 +30,9 @@ bananAs bananAS banANAS
 
 For the challenge, one had to reverse the bananaScript interpreter that I wrote and first teach themselves bananaScript, and then reverse a complex banana-script that asked four questions, took four inputs, added them all together, and xor'ed them against the flag.  You can read a writeup about how one team did that, [here](https://github.com/ShellCollectingClub/csaw2017/tree/master/bananascript).
 
-bananaScripts will be maintained [here](https://github.com/SaplingStudios/bananaScript) for any desired future use.
+bananaScripts will be maintained [here](https://github.com/KyleMiles/bananaScript) for any desired future use.
 
-### Super Banana Babbel
+### [Super Banana Babbel](https://github.com/KyleMiles/bananaScript/HSF)
 Super Banana Babbel was another challenge I wrote for [HSF](https://csaw.engineering.nyu.edu/hsf) that used bananaScript.  This time, 136 different interpreters were given with 136 different banana-scripts.  Each script only ran properly with one of the interpreters, and printed out the old and new testament (which served as an arbitrarily large text in the public domain), except with one line replaced with "The \_th character of the flag is \_", which was trivial to use regular expressions to parse out.
 
 ### [Are You Alive](https://github.com/isislab/CSAW-CTF-2017-Finals/blob/master/Misc/areYouAlive.txt)
