@@ -7,7 +7,7 @@ My three most recent projects, EMA, bananaScript, and my Scrapbook can be found 
       {% include imageLink.html url="https://github.com/SaplingStudios/EMA" imageLink="/assets/EMA.png" alt="" width=150 height=150 %}
     </th>
     <th>
-      {% include imageLink.html url="https://github.com/SaplingStudios/bananaScript" imageLink="/assets/bananaScript.png" alt="" width=150 height=150 %}
+      {% include imageLink.html url="https://github.com/KyleMiles/bananaScript" imageLink="/assets/bananaScript.png" alt="" width=150 height=150 %}
     </th>
     <th>
       {% include imageLink.html url="https://github.com/KyleMiles/ScrapBook" imageLink="/assets/scrapbook.png" alt="" width=150 height=150 %}
