@@ -1,1 +1,466 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"/><link rel="icon" href="/favicon.ico"/><meta name="viewport" content="width=device-width,initial-scale=1"/><meta name="theme-color" content="#000000"/><meta name="description" content="Kyle Martin's Website"/><link rel="apple-touch-icon" href="/logo192.png"/><link rel="manifest" href="/manifest.json"/><title>elyk.dev</title></head><body><noscript>You need to enable JavaScript to run this app.</noscript><div id="root"></div><script>!function(e){function r(r){for(var n,l,f=r[0],i=r[1],a=r[2],c=0,s=[];c<f.length;c++)l=f[c],Object.prototype.hasOwnProperty.call(o,l)&&o[l]&&s.push(o[l][0]),o[l]=0;for(n in i)Object.prototype.hasOwnProperty.call(i,n)&&(e[n]=i[n]);for(p&&p(r);s.length;)s.shift()();return u.push.apply(u,a||[]),t()}function t(){for(var e,r=0;r<u.length;r++){for(var t=u[r],n=!0,f=1;f<t.length;f++){var i=t[f];0!==o[i]&&(n=!1)}n&&(u.splice(r--,1),e=l(l.s=t[0]))}return e}var n={},o={1:0},u=[];function l(r){if(n[r])return n[r].exports;var t=n[r]={i:r,l:!1,exports:{}};return e[r].call(t.exports,t,t.exports,l),t.l=!0,t.exports}l.m=e,l.c=n,l.d=function(e,r,t){l.o(e,r)||Object.defineProperty(e,r,{enumerable:!0,get:t})},l.r=function(e){"undefined"!=typeof Symbol&&Symbol.toStringTag&&Object.defineProperty(e,Symbol.toStringTag,{value:"Module"}),Object.defineProperty(e,"__esModule",{value:!0})},l.t=function(e,r){if(1&r&&(e=l(e)),8&r)return e;if(4&r&&"object"==typeof e&&e&&e.__esModule)return e;var t=Object.create(null);if(l.r(t),Object.defineProperty(t,"default",{enumerable:!0,value:e}),2&r&&"string"!=typeof e)for(var n in e)l.d(t,n,function(r){return e[r]}.bind(null,n));return t},l.n=function(e){var r=e&&e.__esModule?function(){return e.default}:function(){return e};return l.d(r,"a",r),r},l.o=function(e,r){return Object.prototype.hasOwnProperty.call(e,r)},l.p="/";var f=this["webpackJsonpelyk.dev"]=this["webpackJsonpelyk.dev"]||[],i=f.push.bind(f);f.push=r,f=f.slice();for(var a=0;a<f.length;a++)r(f[a]);var p=i;t()}([])</script><script src="/static/js/2.dc6a20cd.chunk.js"></script><script src="/static/js/main.e44c4860.chunk.js"></script></body></html>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Kyle Martin's personal website and in-browser terminal."
+    />
+    <title>Kyle Martin</title>
+    <link rel="icon" href="/favicon.ico" />
+    <link data-trunk rel="copy-file" href="favicon.ico" />
+    <link data-trunk rel="css" href="src/styles.css" />
+    <link data-trunk rel="rust" href="Cargo.toml" />
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.27.2/full/pyodide.js"></script>
+    <script>
+      // Profile storage in IndexedDB (localStorage's ~5MB cap is too small once
+      // packages are installed). A single key-value store; first read migrates
+      // any legacy localStorage value over.
+      const ELYK_DB = "elyk";
+      const ELYK_STORE = "kv";
+
+      function _elykOpenDb() {
+        return new Promise((resolve, reject) => {
+          const req = indexedDB.open(ELYK_DB, 1);
+          req.onupgradeneeded = () => req.result.createObjectStore(ELYK_STORE);
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        });
+      }
+
+      window.elykStorageGet = async function (key) {
+        const db = await _elykOpenDb();
+        const value = await new Promise((resolve, reject) => {
+          const req = db.transaction(ELYK_STORE, "readonly").objectStore(ELYK_STORE).get(key);
+          req.onsuccess = () => resolve(req.result ?? null);
+          req.onerror = () => reject(req.error);
+        });
+        if (value !== null) return value;
+
+        const legacy = localStorage.getItem(key);
+        if (legacy !== null) await window.elykStorageSet(key, legacy);
+        return legacy;
+      };
+
+      window.elykStorageSet = async function (key, value) {
+        const db = await _elykOpenDb();
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction(ELYK_STORE, "readwrite");
+          tx.objectStore(ELYK_STORE).put(value, key);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+      };
+
+      window.elykFetchText = async function (url) {
+        const response = await fetch(url);
+        return JSON.stringify({
+          ok: response.ok,
+          status: response.status,
+          status_text: response.statusText,
+          text: await response.text(),
+        });
+      };
+
+      // Pyodide is large and async; the Rust side talks to it only through the
+      // functions below so the JS-interop surface stays small.
+      let _pyodide = null;
+      let _pyodideLoading = null;
+
+      window.elykPyodideReady = function () {
+        return _pyodide !== null;
+      };
+
+      window.elykEnsurePyodide = function () {
+        if (_pyodide) return Promise.resolve(_pyodide);
+        if (!_pyodideLoading) {
+          console.log("[py] loadPyodide() starting…");
+          _pyodideLoading = loadPyodide()
+            .then((py) => {
+              // Packages live in the visible terminal filesystem, not hidden in
+              // Pyodide's runtime directories.
+              py.runPython(`
+import os, sys, io
+os.makedirs("/python/site-packages", exist_ok=True)
+if "/python/site-packages" not in sys.path:
+    sys.path.insert(0, "/python/site-packages")
+
+# Output capture replaces sys.stdout/stdin with a StringIO; some packages (e.g.
+# fortune) call sys.stdout.reconfigure() at import time, which StringIO lacks.
+# Expose a forgiving capture buffer on the io module for all bridge snippets.
+class _ElykCapture(io.StringIO):
+    encoding = "utf-8"
+    def reconfigure(self, *a, **k):
+        pass
+io.ElykCapture = _ElykCapture
+`);
+              console.log("[py] Pyodide ready:", py.version);
+              _pyodide = py;
+              return py;
+            })
+            .catch((err) => {
+              console.error("[py] loadPyodide() failed:", err);
+              _pyodideLoading = null;
+              throw err;
+            });
+        }
+        return _pyodideLoading;
+      };
+
+      // The terminal-visible parts of Pyodide's filesystem. Everything else
+      // (/lib, /usr, /tmp, …) is CPython/system state.
+      const ELYK_HOME = "/root";
+      const ELYK_MIRROR_ROOTS = ["/root", "/python"];
+
+      // Apply a batch of filesystem operations (computed in Rust by diffing the
+      // overlay against the mirror) to Pyodide's FS, then chdir into `cwd` so
+      // relative paths in Python resolve like the terminal's working directory.
+      window.elykFsApply = async function (opsJson) {
+        const py = await window.elykEnsurePyodide();
+        const FS = py.FS;
+        const ops = JSON.parse(opsJson);
+
+        const mkdirp = (dir) => {
+          const parts = dir.split("/").filter(Boolean);
+          let cur = "";
+          for (const part of parts) {
+            cur += "/" + part;
+            try {
+              FS.mkdir(cur);
+            } catch (e) {
+              /* already exists */
+            }
+          }
+        };
+
+        for (const dir of ops.mkdirs || []) mkdirp(dir);
+        for (const [path, content] of ops.writes || []) {
+          mkdirp(path.slice(0, path.lastIndexOf("/")) || "/");
+          FS.writeFile(path, content);
+        }
+        for (const path of ops.unlinks || []) {
+          try {
+            FS.unlink(path);
+          } catch (e) {
+            /* already gone */
+          }
+        }
+        for (const path of ops.rmdirs || []) {
+          try {
+            FS.rmdir(path);
+          } catch (e) {
+            /* missing or non-empty */
+          }
+        }
+        if (ops.cwd) {
+          mkdirp(ops.cwd);
+          try {
+            FS.chdir(ops.cwd);
+          } catch (e) {
+            /* not a directory */
+          }
+        }
+      };
+
+      // Install packages, then relocate whatever new top-level entries landed
+      // in Pyodide's real site-packages into /python/site-packages, which is
+      // first on sys.path and mirrored into the terminal filesystem. Returns
+      // JSON {ok, output}. Network failures and missing wheels surface in output.
+      window.elykPipInstall = async function (pkgsJson) {
+        const py = await window.elykEnsurePyodide();
+        await py.loadPackage("micropip");
+        const ns = py.toPy({ pkgs_json: pkgsJson });
+        try {
+          return await py.runPythonAsync(`
+import micropip, os, shutil, importlib, sysconfig, json, io, contextlib, traceback
+
+pkgs = json.loads(pkgs_json)
+default = sysconfig.get_path("purelib")
+target = "/python/site-packages"
+os.makedirs(target, exist_ok=True)
+before = set(os.listdir(default))
+
+ok = True
+buf = io.ElykCapture()
+with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+    try:
+        await micropip.install(pkgs)
+    except BaseException:
+        ok = False
+        traceback.print_exc()
+
+    if ok:
+        moved = []
+        for name in sorted(set(os.listdir(default)) - before):
+            dst = os.path.join(target, name)
+            if os.path.isdir(dst):
+                shutil.rmtree(dst)
+            elif os.path.exists(dst):
+                os.remove(dst)
+            shutil.move(os.path.join(default, name), dst)
+            moved.append(name)
+        importlib.invalidate_caches()
+        print("Installed " + ", ".join(pkgs) if moved else "Already installed.")
+
+json.dumps({"ok": ok, "output": buf.getvalue()})
+`, { globals: ns });
+        } finally {
+          ns.destroy();
+        }
+      };
+
+      // Run a package-provided console_scripts entry point from terminal command
+      // dispatch. Rust decides the name exists from entry_points.txt; Python
+      // resolves and executes the installed metadata so import semantics match
+      // real console script wrappers.
+      window.elykRunConsoleScript = async function (scriptName, argsJson, stdinText) {
+        const py = await window.elykEnsurePyodide();
+        const ns = py.toPy({ script_name: scriptName, args_json: argsJson, stdin_text: stdinText ?? null });
+        try {
+          return await py.runPythonAsync(`
+import importlib.metadata, io, contextlib, json, sys, os, glob, runpy, traceback
+
+args = json.loads(args_json)
+buf = io.ElykCapture()
+ok = True
+exit_code = 0
+
+def find_entry_point():
+    eps = importlib.metadata.entry_points()
+    if hasattr(eps, "select"):
+        matches = list(eps.select(group="console_scripts", name=script_name))
+    else:
+        matches = [ep for ep in eps.get("console_scripts", []) if ep.name == script_name]
+    return matches[0] if matches else None
+
+def find_data_script():
+    # Wheels that predate entry points ship the executable under */*.data/scripts/.
+    for base in sys.path:
+        if not base:
+            continue
+        for cand in glob.glob(os.path.join(base, "*.data", "scripts", script_name)):
+            if os.path.isfile(cand):
+                return cand
+    return None
+
+try:
+    entry_point = find_entry_point()
+    script_path = None if entry_point else find_data_script()
+
+    if entry_point is None and script_path is None:
+        ok = False
+        print(f"No Python console script named {script_name!r} is installed.", file=buf)
+    else:
+        old_argv = sys.argv[:]
+        old_stdin = sys.stdin
+        sys.argv = [script_name, *args]
+        if stdin_text is not None:
+            sys.stdin = io.ElykCapture(stdin_text)
+        try:
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                try:
+                    if entry_point is not None:
+                        result = entry_point.load()()
+                        if isinstance(result, int):
+                            exit_code = result
+                        elif result is not None:
+                            print(result, file=sys.stderr)
+                            exit_code = 1
+                    else:
+                        runpy.run_path(script_path, run_name="__main__")
+                except SystemExit as exc:
+                    code = exc.code
+                    if code is None:
+                        exit_code = 0
+                    elif isinstance(code, int):
+                        exit_code = code
+                    else:
+                        print(code, file=sys.stderr)
+                        exit_code = 1
+                except BaseException:
+                    ok = False
+                    traceback.print_exc()
+        finally:
+            sys.argv = old_argv
+            sys.stdin = old_stdin
+
+        if exit_code:
+            ok = False
+            print(f"{script_name}: exited with status {exit_code}", file=buf)
+except BaseException:
+    ok = False
+    traceback.print_exc(file=buf)
+
+json.dumps({"ok": ok, "output": buf.getvalue()})
+`, { globals: ns });
+        } finally {
+          ns.destroy();
+        }
+      };
+
+      // Run a Python file as `__main__` (like `python3 file.py`), capturing
+      // stdout/stderr. `args` become sys.argv[1:].
+      window.elykRunPythonFile = async function (path, argsJson) {
+        const py = await window.elykEnsurePyodide();
+        const ns = py.toPy({ path, args_json: argsJson });
+        try {
+          return await py.runPythonAsync(`
+import io, contextlib, json, sys, runpy, traceback
+
+args = json.loads(args_json)
+buf = io.ElykCapture()
+ok = True
+old_argv = sys.argv[:]
+sys.argv = [path, *args]
+try:
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+        try:
+            runpy.run_path(path, run_name="__main__")
+        except SystemExit:
+            pass
+        except BaseException:
+            ok = False
+            traceback.print_exc()
+finally:
+    sys.argv = old_argv
+
+json.dumps({"ok": ok, "output": buf.getvalue()})
+`, { globals: ns });
+        } finally {
+          ns.destroy();
+        }
+      };
+
+      // Walk the mirrored roots and return them as JSON. UTF-8 files include
+      // their text; binary files are flagged so the Rust side can skip them (the
+      // overlay stores text only). Paths outside these roots are left alone.
+      window.elykFsSnapshot = async function () {
+        const py = await window.elykEnsurePyodide();
+        const FS = py.FS;
+        const out = [];
+
+        const walk = (dir) => {
+          let names;
+          try {
+            names = FS.readdir(dir);
+          } catch (e) {
+            return;
+          }
+          for (const name of names) {
+            if (name === "." || name === "..") continue;
+            const path = dir + "/" + name;
+            let mode;
+            try {
+              mode = FS.stat(path).mode;
+            } catch (e) {
+              continue;
+            }
+            if (FS.isDir(mode)) {
+              out.push({ path, dir: true });
+              walk(path);
+            } else if (FS.isFile(mode)) {
+              const bytes = FS.readFile(path);
+              try {
+                const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+                out.push({ path, content: text });
+              } catch (e) {
+                out.push({ path, binary: true });
+              }
+            }
+          }
+        };
+
+        for (const root of ELYK_MIRROR_ROOTS) {
+          try {
+            FS.stat(root);
+            walk(root);
+          } catch (e) {
+            /* root not created yet */
+          }
+        }
+        return JSON.stringify(out);
+      };
+
+      // Evaluate one REPL submission. `codeop.compile_command` decides whether
+      // the buffered source is a complete statement (run it), still incomplete
+      // (caller should keep buffering with a `...` prompt), or a real syntax
+      // error (run it so the traceback is captured). Single mode makes bare
+      // expressions echo their repr, exactly like the CPython prompt. Returns a
+      // JSON string: {"incomplete": bool, "output": str}.
+      // Tab completion for the REPL: complete the trailing identifier/dotted
+      // expression against the live __main__ namespace via rlcompleter. Returns
+      // JSON {text, matches} where `text` is the fragment being completed.
+      window.elykPythonComplete = async function (line) {
+        const py = await window.elykEnsurePyodide();
+        const ns = py.toPy({ line });
+        try {
+          return await py.runPythonAsync(`
+import json, re, rlcompleter, __main__
+
+m = re.search(r"[\\w.]*$", line)
+text = m.group(0) if m else ""
+completer = rlcompleter.Completer(__main__.__dict__)
+matches, seen, i = [], set(), 0
+while i < 500:
+    try:
+        c = completer.complete(text, i)
+    except Exception:
+        break
+    i += 1
+    if c is None:
+        break
+    if c not in seen:
+        seen.add(c)
+        matches.append(c)
+
+json.dumps({"text": text, "matches": matches})
+`, { globals: ns });
+        } finally {
+          ns.destroy();
+        }
+      };
+
+      window.elykRunPython = async function (source) {
+        const py = await window.elykEnsurePyodide();
+        // Run the harness in a throwaway namespace; user code execs into
+        // __main__ so its names persist, but ours don't leak into the REPL.
+        const ns = py.toPy({ source });
+        try {
+          return await py.runPythonAsync(`
+import io, contextlib, traceback, codeop, json, __main__
+
+result = {"incomplete": False, "output": ""}
+try:
+    code = codeop.compile_command(source, "<repl>", "single")
+except (SyntaxError, ValueError, OverflowError):
+    code = "__error__"  # complete but invalid — fall through to report it
+
+if code is None:
+    result["incomplete"] = True
+else:
+    buf = io.ElykCapture()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+        try:
+            if isinstance(code, str):
+                compile(source, "<repl>", "single")  # re-raise the SyntaxError
+            else:
+                exec(code, __main__.__dict__)
+        except SystemExit:
+            pass
+        except BaseException:
+            traceback.print_exc()
+    result["output"] = buf.getvalue()
+
+json.dumps(result)
+`, { globals: ns });
+        } finally {
+          ns.destroy();
+        }
+      };
+    </script>
+  </head>
+  <body>
+    <noscript>This site needs WebAssembly and JavaScript enabled.</noscript>
+  </body>
+</html>

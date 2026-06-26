@@ -1,0 +1,17 @@
+# Rust build artifacts
+target/
+
+# Static site / frontend build output
+dist/
+
+# macOS
+.DS_Store
+
+# Editor and local workspace files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.history/
+.DS_Store?
