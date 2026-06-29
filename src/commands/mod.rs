@@ -446,12 +446,24 @@ mod tests {
     }
 
     #[test]
+    fn bubbles_hard_launches_hard_mode() {
+        let mut ctx = TerminalContext::new();
+
+        assert_eq!(
+            run_line(&mut ctx, "bubbles hard"),
+            vec![OutputBlock::LaunchGame {
+                game_id: "bubbles".to_string(),
+                hard: true,
+            }]
+        );
+    }
+
+    #[test]
     fn zero_arg_commands_reject_extra_args() {
         for line in [
             "clear now",
             "pwd /",
             "toggle overlay",
-            "bubbles hard",
             "help pwd extra",
         ] {
             let mut ctx = TerminalContext::new();

@@ -16,9 +16,9 @@ const STORAGE_KEY: &str = "elyk.bubbles.high-score";
 
 /// Canvas implementation for the terminal bubbles game.
 #[component]
-pub fn BubblesGame() -> impl IntoView {
+pub fn BubblesGame(#[prop(default = false)] hard: bool) -> impl IntoView {
     let canvas_ref = NodeRef::<Canvas>::new();
-    let runner = Rc::new(RefCell::new(CanvasRunner::new(load_high_score())));
+    let runner = Rc::new(RefCell::new(CanvasRunner::new(load_high_score(), hard)));
     let animation = Rc::new(RefCell::new(AnimationLoop::default()));
 
     let start_runner = Rc::clone(&runner);
@@ -303,9 +303,13 @@ fn random_seed() -> u64 {
 }
 
 impl CanvasRunner {
-    fn new(high_score: u64) -> Self {
+    fn new(high_score: u64, hard: bool) -> Self {
         Self {
-            game: BubbleGame::new(random_seed(), high_score),
+            game: if hard {
+                BubbleGame::hard(random_seed(), high_score)
+            } else {
+                BubbleGame::new(random_seed(), high_score)
+            },
             aim_angle: -PI / 2.0,
             projectile: None,
             particles: Vec::new(),
@@ -818,7 +822,7 @@ fn draw_cannon(
     layout: BubbleLayout,
     angle: f64,
     color: BubbleColor,
-    next: [BubbleColor; 3],
+    next: Vec<BubbleColor>,
     held: Option<BubbleColor>,
 ) {
     let muzzle_x = layout.cannon_x + angle.cos() * 34.0;

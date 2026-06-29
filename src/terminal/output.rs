@@ -18,6 +18,7 @@ pub enum OutputBlock {
     },
     LaunchGame {
         game_id: String,
+        hard: bool,
     },
 }
 

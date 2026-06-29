@@ -1671,10 +1671,10 @@ fn OutputBlockView(
             />
         }
         .into_any(),
-        OutputBlock::LaunchGame { game_id } if game_id == "bubbles" => {
-            view! { <BubblesGame /> }.into_any()
+        OutputBlock::LaunchGame { game_id, hard } if game_id == "bubbles" => {
+            view! { <BubblesGame hard=hard /> }.into_any()
         }
-        OutputBlock::LaunchGame { game_id } => view! {
+        OutputBlock::LaunchGame { game_id, .. } => view! {
             <section class="terminal-game-placeholder">
                 <h2>{game_id.clone()}</h2>
                 <p>{format!("No renderer is registered for game_id '{}'.", game_id)}</p>

@@ -11,6 +11,7 @@ pub const COLORS: [BubbleColor; 6] = [
     BubbleColor::Coral,
 ];
 const SHOTS_PER_DROP: u32 = 5;
+const HARD_SHOTS_PER_DROP: u32 = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BubbleColor {
@@ -284,14 +285,23 @@ pub struct BubbleGame {
     pub held: Option<BubbleColor>,
     rng: Lcg,
     queue: VecDeque<BubbleColor>,
+    rules: GameRules,
 }
 
 impl BubbleGame {
     pub fn new(seed: u64, high_score: u64) -> Self {
+        Self::with_rules(seed, high_score, GameRules::normal())
+    }
+
+    pub fn hard(seed: u64, high_score: u64) -> Self {
+        Self::with_rules(seed, high_score, GameRules::hard())
+    }
+
+    fn with_rules(seed: u64, high_score: u64, rules: GameRules) -> Self {
         let board = Board::seeded(seed ^ 0xa53a_91c7, 5);
         let mut rng = Lcg::new(seed);
         let mut queue = VecDeque::new();
-        let active_colors = board.active_colors();
+        let active_colors = rules.colors_for_board(&board);
         for _ in 0..4 {
             queue.push_back(rng.next_color_from(&active_colors));
         }
@@ -300,11 +310,12 @@ impl BubbleGame {
             board,
             score: 0,
             high_score,
-            shots_until_drop: SHOTS_PER_DROP,
+            shots_until_drop: rules.shots_per_drop,
             game_over: false,
             held: None,
             rng,
             queue,
+            rules,
         }
     }
 
@@ -312,8 +323,8 @@ impl BubbleGame {
         self.queue[0]
     }
 
-    pub fn next_colors(&self) -> [BubbleColor; 3] {
-        [self.queue[1], self.queue[2], self.queue[3]]
+    pub fn next_colors(&self) -> Vec<BubbleColor> {
+        self.queue.iter().copied().skip(1).take(3).collect()
     }
 
     /// Stash the current bubble for later, or swap it back with a held one.
@@ -334,17 +345,16 @@ impl BubbleGame {
     }
 
     /// Pop the fired bubble off the queue and refill so `current_color` and
-    /// `next_colors` advance the instant a shot leaves the cannon.
+    /// `next_colors` advance the instant a shot leaves the cannon. The final
+    /// queue slot is refilled after the shot resolves so cleared colors are not
+    /// requeued from the pre-shot board state.
     pub fn pop_next(&mut self) -> BubbleColor {
-        let color = self.queue.pop_front().expect("queue is never empty");
-        self.refill_queue();
-        color
+        self.queue.pop_front().expect("queue is never empty")
     }
 
     pub fn attach_current(&mut self, coord: CellCoord) -> Resolution {
         let color = self.current_color();
         self.queue.pop_front();
-        self.refill_queue();
         self.attach_color(coord, color)
     }
 
@@ -379,7 +389,11 @@ impl BubbleGame {
 
     pub fn restart(&mut self) {
         let high_score = self.high_score;
-        *self = Self::new(self.rng.next_u32() as u64 ^ 0x710d_d15c, high_score);
+        *self = Self::with_rules(
+            self.rng.next_u32() as u64 ^ 0x710d_d15c,
+            high_score,
+            self.rules,
+        );
     }
 
     fn advance_ceiling(&mut self) {
@@ -388,36 +402,26 @@ impl BubbleGame {
             return;
         }
 
-        let active_colors = self.board.active_colors();
+        let active_colors = self.rules.colors_for_board(&self.board);
         let mut colors = [BubbleColor::Rose; COLS];
         for color in &mut colors {
             *color = self.rng.next_color_from(&active_colors);
         }
 
         let overflow = self.board.push_ceiling_row(&colors);
-        self.shots_until_drop = SHOTS_PER_DROP;
+        self.shots_until_drop = self.rules.shots_per_drop;
         if overflow {
             self.game_over = true;
         }
     }
 
     fn sync_future_bubbles(&mut self) {
-        let active_colors = self.board.active_colors();
-        self.queue = self
-            .queue
-            .iter()
-            .copied()
-            .filter(|color| active_colors.contains(color))
-            .collect();
+        let active_colors = self.rules.colors_for_board(&self.board);
         self.refill_queue_from(&active_colors);
-
-        if self.held.is_some_and(|held| !active_colors.contains(&held)) {
-            self.held = None;
-        }
     }
 
     fn refill_queue(&mut self) {
-        let active_colors = self.board.active_colors();
+        let active_colors = self.rules.colors_for_board(&self.board);
         self.refill_queue_from(&active_colors);
     }
 
@@ -425,6 +429,36 @@ impl BubbleGame {
         while self.queue.len() < 4 {
             self.queue
                 .push_back(self.rng.next_color_from(active_colors));
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GameRules {
+    shots_per_drop: u32,
+    use_active_palette: bool,
+}
+
+impl GameRules {
+    const fn normal() -> Self {
+        Self {
+            shots_per_drop: SHOTS_PER_DROP,
+            use_active_palette: true,
+        }
+    }
+
+    const fn hard() -> Self {
+        Self {
+            shots_per_drop: HARD_SHOTS_PER_DROP,
+            use_active_palette: false,
+        }
+    }
+
+    fn colors_for_board(self, board: &Board) -> Vec<BubbleColor> {
+        if self.use_active_palette {
+            board.active_colors()
+        } else {
+            COLORS.to_vec()
         }
     }
 }
@@ -520,6 +554,7 @@ mod tests {
 
         assert_eq!(fired, first);
         assert_eq!(game.current_color(), second);
+        assert_eq!(game.queue.len(), 3);
     }
 
     #[test]
@@ -689,7 +724,40 @@ mod tests {
     }
 
     #[test]
-    fn eliminated_colors_are_removed_from_queue_and_hold() {
+    fn hard_mode_uses_four_shots_per_drop() {
+        let mut game = BubbleGame::hard(7, 0);
+        game.board = Board::empty();
+        game.queue.clear();
+        game.queue.extend([
+            BubbleColor::Mint,
+            BubbleColor::Gold,
+            BubbleColor::Sky,
+            BubbleColor::Rose,
+        ]);
+
+        assert_eq!(game.shots_until_drop, HARD_SHOTS_PER_DROP);
+
+        let resolution = game.attach_current(CellCoord::new(5, 5));
+
+        assert!(resolution.popped.is_empty());
+        assert_eq!(game.shots_until_drop, HARD_SHOTS_PER_DROP - 1);
+
+        game.queue.clear();
+        game.queue.extend([
+            BubbleColor::Rose,
+            BubbleColor::Gold,
+            BubbleColor::Sky,
+            BubbleColor::Mint,
+        ]);
+        game.shots_until_drop = 1;
+        let resolution = game.attach_current(CellCoord::new(8, 8));
+
+        assert!(resolution.popped.is_empty());
+        assert_eq!(game.shots_until_drop, HARD_SHOTS_PER_DROP);
+    }
+
+    #[test]
+    fn normal_mode_keeps_eliminated_colors_in_queue_and_hold() {
         let mut game = BubbleGame::new(7, 0);
         game.board = Board::empty();
         game.queue.clear();
@@ -710,9 +778,67 @@ mod tests {
         let resolution = game.attach_current(CellCoord::new(1, 0));
 
         assert_eq!(resolution.popped.len(), 3);
-        assert_eq!(game.current_color(), BubbleColor::Gold);
-        assert_eq!(game.next_colors(), [BubbleColor::Gold; 3]);
-        assert_eq!(game.held, None);
+        assert_eq!(game.current_color(), BubbleColor::Coral);
+        assert_eq!(game.held, Some(BubbleColor::Rose));
+    }
+
+    #[test]
+    fn normal_mode_refills_from_board_colors_without_pruning_queue() {
+        let mut game = BubbleGame::new(7, 0);
+        game.board = Board::empty();
+        game.queue.clear();
+        game.queue.extend([BubbleColor::Coral]);
+        game.board
+            .set(CellCoord::new(0, 0), Some(BubbleColor::Gold));
+
+        game.refill_queue();
+
+        assert_eq!(game.current_color(), BubbleColor::Coral);
+        assert_eq!(game.next_colors(), vec![BubbleColor::Gold; 3]);
+    }
+
+    #[test]
+    fn normal_mode_does_not_refill_shot_slot_with_color_about_to_clear() {
+        let mut game = BubbleGame::new(7, 0);
+        game.board = Board::empty();
+        game.queue.clear();
+        game.queue.extend([BubbleColor::Rose]);
+        game.board
+            .set(CellCoord::new(0, 0), Some(BubbleColor::Rose));
+        game.board
+            .set(CellCoord::new(0, 1), Some(BubbleColor::Rose));
+        game.board
+            .set(CellCoord::new(0, 3), Some(BubbleColor::Gold));
+
+        let resolution = game.attach_current(CellCoord::new(1, 0));
+
+        assert_eq!(resolution.popped.len(), 3);
+        assert_eq!(game.queue, VecDeque::from(vec![BubbleColor::Gold; 4]));
+    }
+
+    #[test]
+    fn normal_mode_spawns_a_cleared_color_after_queue_puts_it_back() {
+        let mut game = BubbleGame::new(7, 0);
+        game.board = Board::empty();
+        game.queue.clear();
+        game.queue.extend([
+            BubbleColor::Rose,
+            BubbleColor::Gold,
+            BubbleColor::Sky,
+            BubbleColor::Mint,
+        ]);
+        game.shots_until_drop = 1;
+
+        let resolution = game.attach_current(CellCoord::new(5, 5));
+
+        assert!(resolution.popped.is_empty());
+        assert_eq!(game.shots_until_drop, SHOTS_PER_DROP);
+        for col in 0..COLS {
+            assert_eq!(
+                game.board.get(CellCoord::new(0, col)),
+                Some(BubbleColor::Rose)
+            );
+        }
     }
 
     #[test]

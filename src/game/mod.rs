@@ -14,12 +14,13 @@ use leptos::prelude::*;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[component]
-pub fn BubblesGame() -> impl IntoView {
+pub fn BubblesGame(#[prop(default = false)] hard: bool) -> impl IntoView {
+    let mode = if hard { "hard mode" } else { "normal mode" };
     view! {
         <section class="terminal-game">
             <div class="terminal-game-header">
                 <span>"bubbles"</span>
-                <span>"WASM canvas renderer"</span>
+                <span>{mode}</span>
             </div>
             <div class="terminal-game-fallback">
                 "The bubbles canvas is available in the browser build."
