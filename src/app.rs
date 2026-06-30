@@ -7,7 +7,7 @@ use web_sys::{KeyboardEvent, MouseEvent};
 
 use crate::commands;
 use crate::fs::EntryKind;
-use crate::game::BubblesGame;
+use crate::game::{BubblesGame, TextropolisGame};
 use crate::storage::{load_profile, save_profile};
 use crate::terminal::{
     parse_ansi_fragments, parse_line, AnsiFragment, ConsolePipe, ConsoleScriptInvocation,
@@ -59,7 +59,6 @@ pub fn App() -> impl IntoView {
                 ))],
             );
         }
-
     });
     let terminal_window_ref = NodeRef::<Div>::new();
     let command_input_ref = NodeRef::<Textarea>::new();
@@ -1674,6 +1673,9 @@ fn OutputBlockView(
         OutputBlock::LaunchGame { game_id, hard } if game_id == "bubbles" => {
             view! { <BubblesGame hard=hard /> }.into_any()
         }
+        OutputBlock::LaunchGame { game_id, .. } if game_id == "textropolis" => {
+            view! { <TextropolisGame /> }.into_any()
+        }
         OutputBlock::LaunchGame { game_id, .. } => view! {
             <section class="terminal-game-placeholder">
                 <h2>{game_id.clone()}</h2>
@@ -1882,7 +1884,6 @@ mod tests {
             })
         );
     }
-
 
     #[test]
     fn pipe_rejects_non_text_output() {

@@ -1,10 +1,13 @@
 pub mod core;
+pub mod textropolis;
 
 #[cfg(target_arch = "wasm32")]
 mod canvas;
 
 #[cfg(target_arch = "wasm32")]
 pub use canvas::{clear_high_score, BubblesGame};
+
+pub use textropolis::TextropolisGame;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn clear_high_score() {}

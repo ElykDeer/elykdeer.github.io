@@ -10,6 +10,7 @@
     <title>Kyle Martin</title>
     <link rel="icon" href="/favicon.ico" />
     <link data-trunk rel="copy-file" href="favicon.ico" />
+    <link data-trunk rel="copy-file" href="textropolis-dictionary.json.gz" />
     <link data-trunk rel="css" href="src/styles.css" />
     <link data-trunk rel="rust" href="Cargo.toml" />
     <script src="https://cdn.jsdelivr.net/pyodide/v0.27.2/full/pyodide.js"></script>
@@ -62,6 +63,100 @@
           text: await response.text(),
         });
       };
+
+      let _textropolisDictionary = null;
+      window.elykLoadTextropolisDictionary = function () {
+        if (!_textropolisDictionary) {
+          _textropolisDictionary = fetch("/textropolis-dictionary.json.gz").then(async (response) => {
+            if (!response.ok) {
+              throw new Error(`HTTP ${response.status} ${response.statusText}`);
+            }
+            if (!("DecompressionStream" in window)) {
+              throw new Error("This browser cannot decompress the Textropolis dictionary.");
+            }
+            const stream = response.body.pipeThrough(new DecompressionStream("gzip"));
+            return new Response(stream).text();
+          });
+        }
+        return _textropolisDictionary;
+      };
+
+      window.addEventListener("load", () => {
+        const preload = () => window.elykLoadTextropolisDictionary().catch((err) => {
+          console.warn("[textropolis] dictionary preload failed:", err);
+        });
+        if ("requestIdleCallback" in window) {
+          window.requestIdleCallback(preload, { timeout: 2000 });
+        } else {
+          window.setTimeout(preload, 0);
+        }
+      });
+
+      (() => {
+        let dragging = false;
+        let mode = null;
+        let lastButton = null;
+
+        const letterButtonFromPoint = (x, y) => {
+          const element = document.elementFromPoint(x, y);
+          const button = element?.closest?.(".textropolis-letters [data-letter-index]");
+          return button instanceof HTMLButtonElement ? button : null;
+        };
+
+        const begin = (event, inputMode, x, y) => {
+          const button = letterButtonFromPoint(x, y);
+          if (!button) return;
+          event.preventDefault();
+          event.stopPropagation();
+          dragging = true;
+          mode = inputMode;
+          lastButton = null;
+          button.closest(".textropolis-game")?.focus();
+          pick(button);
+        };
+
+        const move = (event, inputMode, x, y) => {
+          if (!dragging || mode !== inputMode) return;
+          event.preventDefault();
+          event.stopPropagation();
+          pick(letterButtonFromPoint(x, y));
+        };
+
+        const end = (inputMode) => {
+          if (mode !== inputMode) return;
+          dragging = false;
+          mode = null;
+          lastButton = null;
+        };
+
+        const pick = (button) => {
+          if (!button || button === lastButton) return;
+          lastButton = button;
+          button.click();
+        };
+
+        document.addEventListener("pointerdown", (event) => {
+          begin(event, "pointer", event.clientX, event.clientY);
+        }, { capture: true, passive: false });
+        document.addEventListener("pointermove", (event) => {
+          move(event, "pointer", event.clientX, event.clientY);
+        }, { capture: true, passive: false });
+        document.addEventListener("pointerup", () => end("pointer"), { capture: true });
+        document.addEventListener("pointercancel", () => end("pointer"), { capture: true });
+
+        document.addEventListener("touchstart", (event) => {
+          if (mode === "pointer") return;
+          const touch = event.touches[0];
+          if (touch) begin(event, "touch", touch.clientX, touch.clientY);
+        }, { capture: true, passive: false });
+        document.addEventListener("touchmove", (event) => {
+          if (mode === "pointer") return;
+          const touch = event.touches[0];
+          if (touch) move(event, "touch", touch.clientX, touch.clientY);
+        }, { capture: true, passive: false });
+        document.addEventListener("touchend", () => end("touch"), { capture: true });
+        document.addEventListener("touchcancel", () => end("touch"), { capture: true });
+      })();
 
       // Pyodide is large and async; the Rust side talks to it only through the
       // functions below so the JS-interop surface stays small.

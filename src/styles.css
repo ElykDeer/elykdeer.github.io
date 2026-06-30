@@ -154,6 +154,312 @@ a {
   color: rgba(199, 223, 201, 0.72);
 }
 
+.textropolis-game {
+  width: min(100%, 58rem);
+  min-height: clamp(32rem, 74vh, 46rem);
+  gap: 0.85rem;
+  overflow: hidden;
+}
+
+.textropolis-game:focus-visible {
+  outline: 2px solid rgba(156, 199, 255, 0.28);
+  outline-offset: 2px;
+}
+
+.textropolis-loading,
+.textropolis-error {
+  min-height: 24rem;
+  display: grid;
+  place-items: center;
+  color: rgba(243, 241, 234, 0.82);
+}
+
+.textropolis-error {
+  color: #ffb8a8;
+}
+
+.textropolis-city-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-auto-rows: max-content;
+  align-content: start;
+  gap: 0.45rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 0.2rem;
+}
+
+.textropolis-city-card {
+  --progress: 0%;
+  position: relative;
+  min-height: 2.75rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.15rem 0.75rem;
+  align-items: center;
+  padding: 0.4rem 0.65rem;
+  border: 1px solid rgba(180, 210, 185, 0.18);
+  border-radius: 0;
+  background:
+    linear-gradient(
+      90deg,
+      rgba(233, 209, 142, 0.2) 0 var(--progress),
+      rgba(0, 0, 0, 0.22) var(--progress) 100%
+    );
+  color: #f3f1ea;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.textropolis-city-card:hover,
+.textropolis-city-card:focus-visible {
+  border-color: rgba(156, 199, 255, 0.82);
+  outline: none;
+}
+
+.textropolis-city-card.locked {
+  color: rgba(199, 223, 201, 0.44);
+  cursor: default;
+}
+
+.textropolis-city-card small {
+  grid-column: 1 / -1;
+  color: rgba(199, 223, 201, 0.58);
+}
+
+.textropolis-word-ticker {
+  min-height: 2rem;
+  position: relative;
+  overflow: hidden;
+  border-block: 1px solid rgba(180, 210, 185, 0.14);
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.textropolis-ticker-track {
+  display: inline-block;
+  min-width: max-content;
+  box-sizing: content-box;
+  padding: 0.32rem 0 0.32rem 100%;
+  color: rgba(243, 241, 234, 0.84);
+  white-space: nowrap;
+  animation: textropolis-ticker var(--ticker-duration, 58s) linear infinite;
+  will-change: transform;
+}
+
+.textropolis-ticker-word {
+  margin: 0 0.7rem 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-transform: uppercase;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.textropolis-ticker-word:not(:last-child)::after {
+  content: " //";
+  color: rgba(199, 223, 201, 0.42);
+}
+
+.textropolis-ticker-word:hover,
+.textropolis-ticker-word:focus-visible {
+  color: #ffffff;
+  outline: none;
+}
+
+.textropolis-ticker-track:empty {
+  animation: none;
+}
+
+.textropolis-definition-sky {
+  --lane-gap: 3.35rem;
+  min-height: 20.8rem;
+  position: relative;
+  overflow: hidden;
+}
+
+.textropolis-definition-sky .textropolis-banner {
+  position: absolute;
+  inset: calc(var(--lane) * var(--lane-gap)) 0 auto 0;
+}
+
+.textropolis-banner-flight {
+  min-width: max-content;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  box-sizing: content-box;
+  padding-left: 100%;
+  animation: textropolis-fly var(--duration, 12000ms) linear var(--delay, 0ms) both;
+  will-change: transform;
+}
+
+.textropolis-plane {
+  width: 2.25rem;
+  height: 1.05rem;
+  position: relative;
+  display: inline-block;
+  border-radius: 999px 50% 50% 999px;
+  background: #e9d18e;
+  box-shadow: inset -0.58rem 0 0 rgba(0, 0, 0, 0.22);
+}
+
+.textropolis-plane::before,
+.textropolis-plane::after {
+  content: "";
+  position: absolute;
+  left: 0.62rem;
+  border-left: 0.72rem solid transparent;
+  border-right: 0.24rem solid transparent;
+}
+
+.textropolis-plane::before {
+  top: -0.56rem;
+  border-bottom: 0.64rem solid #c7dfc9;
+}
+
+.textropolis-plane::after {
+  bottom: -0.5rem;
+  border-top: 0.58rem solid #c7dfc9;
+}
+
+.textropolis-rope {
+  width: 1.4rem;
+  height: 1px;
+  display: inline-block;
+  transform: translateY(-0.23rem) rotate(5deg);
+  background: rgba(199, 223, 201, 0.55);
+}
+
+.textropolis-rope.lower {
+  margin-left: -1.75rem;
+  transform: translateY(0.28rem) rotate(-5deg);
+}
+
+.textropolis-ad {
+  display: inline-block;
+  width: max-content;
+  max-width: min(72vw, 54rem);
+  min-width: 18rem;
+  padding: 0.22rem 0.65rem;
+  border: 1px solid rgba(233, 209, 142, 0.56);
+  background: rgba(233, 209, 142, 0.12);
+  color: rgba(243, 241, 234, 0.92);
+  font-size: 0.88rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.textropolis-current-word {
+  min-height: 4.25rem;
+  display: grid;
+  place-items: center;
+  color: #ffffff;
+  font-size: clamp(2.25rem, 7vw, 5rem);
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.textropolis-feedback {
+  min-height: 1.4rem;
+  color: rgba(243, 241, 234, 0.72);
+  text-align: center;
+}
+
+.textropolis-keyboard {
+  margin-top: auto;
+  border: 1px solid rgba(180, 210, 185, 0.2);
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.textropolis-letters {
+  display: grid;
+  grid-template-columns: repeat(var(--letter-cols, 4), minmax(0, 1fr));
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.textropolis-controls {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  border-top: 1px solid rgba(180, 210, 185, 0.2);
+}
+
+.textropolis-letters button,
+.textropolis-controls button {
+  min-height: 3.2rem;
+  border: 0;
+  border-right: 1px solid rgba(180, 210, 185, 0.14);
+  border-bottom: 1px solid rgba(180, 210, 185, 0.14);
+  border-radius: 0;
+  background: transparent;
+  color: #f3f1ea;
+  font: inherit;
+  cursor: pointer;
+  user-select: none;
+}
+
+.textropolis-letters button {
+  touch-action: none;
+  -webkit-touch-callout: none;
+}
+
+.textropolis-controls button {
+  touch-action: manipulation;
+}
+
+.textropolis-letters button:focus-visible,
+.textropolis-controls button:focus-visible {
+  background: rgba(156, 199, 255, 0.12);
+  outline: none;
+}
+
+.textropolis-letters button.selected {
+  color: rgba(199, 223, 201, 0.38);
+  cursor: default;
+}
+
+@media (hover: hover) {
+  .textropolis-letters button:hover,
+  .textropolis-controls button:hover {
+    background: rgba(156, 199, 255, 0.12);
+  }
+}
+
+@media (hover: none) {
+  .textropolis-letters button:focus,
+  .textropolis-controls button:focus {
+    background: transparent;
+    outline: none;
+  }
+}
+
+@keyframes textropolis-fly {
+  from {
+    transform: translateX(0);
+  }
+
+  to {
+    transform: translateX(-100%);
+  }
+}
+
+@keyframes textropolis-ticker {
+  from {
+    transform: translateX(0);
+  }
+
+  to {
+    transform: translateX(-100%);
+  }
+}
+
 .terminal-file-title,
 .nano-panel-header {
   margin-bottom: 0.55rem;
@@ -383,11 +689,77 @@ a {
   }
 
   .terminal-game {
-    padding: 0.4rem;
+    padding: 0.35rem;
   }
 
   .terminal-game-canvas {
     height: clamp(28rem, 72vh, 36rem);
+  }
+
+  .textropolis-game {
+    height: min(40rem, calc(100svh - 0.8rem));
+    min-height: min(30rem, calc(100svh - 0.8rem));
+    gap: clamp(0.32rem, 1.2svh, 0.6rem);
+  }
+
+  .textropolis-word-ticker {
+    min-height: 1.55rem;
+  }
+
+  .textropolis-ticker-track {
+    padding-block: 0.2rem;
+  }
+
+  .terminal-game-header {
+    font-size: 0.86rem;
+    line-height: 1.15;
+  }
+
+  .textropolis-banner-flight {
+    gap: 0.25rem;
+  }
+
+  .textropolis-ad {
+    min-width: 14rem;
+    max-width: 76vw;
+    padding: 0.16rem 0.45rem;
+    font-size: 0.62rem;
+    line-height: 1.15;
+  }
+
+  .textropolis-definition-sky {
+    --lane-gap: 2.35rem;
+    flex: 0 1 14rem;
+    min-height: 14rem;
+  }
+
+  .textropolis-current-word {
+    min-height: clamp(2.2rem, 8svh, 3.2rem);
+    font-size: clamp(1.8rem, 10vw, 3.2rem);
+  }
+
+  .textropolis-feedback {
+    min-height: 1rem;
+    font-size: 0.82rem;
+    line-height: 1.15;
+  }
+
+  .textropolis-city-list {
+    min-height: 0;
+    gap: 0.5rem;
+  }
+
+  .textropolis-city-card {
+    min-height: 3.05rem;
+  }
+
+  .textropolis-letters button,
+  .textropolis-controls button {
+    min-height: clamp(2.4rem, 7.5svh, 3rem);
+  }
+
+  .textropolis-city-card {
+    grid-template-columns: minmax(0, 1fr) auto;
   }
 
   .nano-editor {

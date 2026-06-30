@@ -21,6 +21,7 @@ pub mod python;
 pub mod rm;
 pub mod sh;
 pub mod tail;
+pub mod textropolis;
 pub mod toggle;
 pub mod wc;
 
@@ -97,6 +98,7 @@ pub fn registry() -> Vec<Box<dyn Command>> {
         Box::new(clear::ClearCommand),
         Box::new(toggle::ToggleCommand),
         Box::new(bubbles::BubblesCommand),
+        Box::new(textropolis::TextropolisCommand),
     ]
 }
 
@@ -202,7 +204,7 @@ mod tests {
     fn every_registered_command_has_metadata() {
         let commands = registry();
 
-        assert_eq!(commands.len(), 25);
+        assert_eq!(commands.len(), 26);
         for command in commands {
             assert!(!command.name().trim().is_empty());
             assert!(!command.summary().trim().is_empty(), "{}", command.name());
@@ -459,12 +461,26 @@ mod tests {
     }
 
     #[test]
+    fn textropolis_launches_game() {
+        let mut ctx = TerminalContext::new();
+
+        assert_eq!(
+            run_line(&mut ctx, "textropolis"),
+            vec![OutputBlock::LaunchGame {
+                game_id: "textropolis".to_string(),
+                hard: false,
+            }]
+        );
+    }
+
+    #[test]
     fn zero_arg_commands_reject_extra_args() {
         for line in [
             "clear now",
             "pwd /",
             "toggle overlay",
             "help pwd extra",
+            "textropolis now",
         ] {
             let mut ctx = TerminalContext::new();
             let output = run_line(&mut ctx, line);
