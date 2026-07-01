@@ -106,6 +106,8 @@ SCOWL_EXCLUDE_PATTERNS = [
 IRREGULAR_VERB_FORMS = {
     "arose",
     "ate",
+    "awoke",
+    "awoken",
     "began",
     "begun",
     "been",
@@ -172,9 +174,37 @@ IRREGULAR_VERB_FORMS = {
     "went",
     "were",
     "won",
+    "woke",
+    "woken",
     "wore",
     "worn",
     "wrote",
+    "written",
+}
+
+IRREGULAR_VERB_PAST_PARTICIPLES = {
+    "awoken",
+    "begun",
+    "been",
+    "born",
+    "brought",
+    "done",
+    "drawn",
+    "driven",
+    "eaten",
+    "flown",
+    "forgotten",
+    "given",
+    "gone",
+    "gotten",
+    "grown",
+    "known",
+    "seen",
+    "sung",
+    "swum",
+    "taken",
+    "woken",
+    "worn",
     "written",
 }
 
@@ -359,11 +389,13 @@ def scowl_base_text(word_chunk: str) -> str:
 
 def clean_inflection_surface(token: str) -> str | None:
     token = token.strip()
+    if ":" in token:
+        token = token.rsplit(":", 1)[1].strip()
     if not token or token in {"-", "?"}:
         return None
+    token = token.replace("!", "").replace("~", "").replace("†", "")
     if any(ch in token for ch in ("'", " ", "-", ".", "/")):
         return None
-    token = token.replace("!", "").replace("~", "").replace("†", "")
     return token if WORD_RE.fullmatch(token) else None
 
 
@@ -392,7 +424,7 @@ def noun_like_inflection(base: str, surface: str) -> bool:
         return False
     return (
         surface in IRREGULAR_NOUN_PLURALS
-        or surface.endswith(("s", "ves", "ies", "ae", "i", "a", "en", "ren"))
+        or surface.endswith(("s", "ves", "ies", "ae", "i", "a"))
     )
 
 
@@ -419,13 +451,11 @@ def relation_for(part_of_speech: str, surface: str, index: int, count: int) -> s
             return "present participle of"
         if surface.endswith("s") and not surface.endswith("ss"):
             return "third-person singular of"
-        if count >= 4:
-            return ["past tense of", "past participle of", "present participle of", "third-person singular of"][
-                min(index, 3)
-            ]
-        if count == 3:
-            return ["past tense of", "present participle of", "third-person singular of"][min(index, 2)]
-        return "past tense of"
+        if surface in IRREGULAR_VERB_PAST_PARTICIPLES:
+            return "past participle of"
+        if surface in IRREGULAR_VERB_FORMS or surface.endswith("ed"):
+            return "past tense of"
+        return "inflected form of"
     if part_of_speech in {"adjective", "adverb"}:
         return "comparative of" if index == 0 else "superlative of" if index == 1 else "inflected form of"
     return "inflected form of"
