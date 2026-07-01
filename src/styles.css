@@ -143,7 +143,7 @@ a {
 .terminal-game-header {
   display: flex;
   justify-content: space-between;
-  gap: 0.7rem;
+  gap: 0.35rem 0.65rem;
   color: #e9d18e;
 }
 
@@ -156,7 +156,8 @@ a {
 
 .textropolis-game {
   width: min(100%, 58rem);
-  min-height: clamp(32rem, 74vh, 46rem);
+  height: min(46rem, calc(100svh - 1.5rem));
+  min-height: min(32rem, calc(100svh - 1.5rem));
   gap: 0.85rem;
   overflow: hidden;
 }
@@ -195,7 +196,7 @@ a {
   position: relative;
   min-height: 2.75rem;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) max-content;
   gap: 0.15rem 0.75rem;
   align-items: center;
   padding: 0.4rem 0.65rem;
@@ -229,27 +230,172 @@ a {
   color: rgba(199, 223, 201, 0.58);
 }
 
-.textropolis-word-ticker {
-  min-height: 2rem;
-  position: relative;
-  overflow: hidden;
-  border-block: 1px solid rgba(180, 210, 185, 0.14);
+.textropolis-city-score {
+  color: rgba(243, 241, 234, 0.82);
+  text-align: right;
+}
+
+.textropolis-select-header {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.textropolis-select-progress {
+  flex: 0 1 auto;
+  min-width: max-content;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.textropolis-city-header {
+  align-items: center;
+  align-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.textropolis-city-title {
+  min-width: 0;
+  flex: 1 1 8rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.textropolis-city-name {
+  min-width: 0;
+  line-height: 1.12;
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+.textropolis-city-stats {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0 0.55rem;
+  margin-left: auto;
+  text-align: right;
+}
+
+.textropolis-city-stats span {
+  white-space: nowrap;
+}
+
+.textropolis-city-points {
+  display: inline-flex;
+  align-items: baseline;
+  color: rgba(243, 241, 234, 0.82);
+}
+
+.textropolis-city-points::before {
+  content: "|";
+  margin-right: 0.55rem;
+  color: #e9d18e;
+}
+
+.textropolis-exit-button {
+  width: 2.2rem;
+  min-width: 2.2rem;
+  height: 2.2rem;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(199, 223, 201, 0.28);
+  border-radius: 0;
+  background: rgba(199, 223, 201, 0.08);
+  color: #c7dfc9;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.textropolis-exit-button:focus-visible {
+  border-color: rgba(156, 199, 255, 0.82);
+  outline: none;
+}
+
+.textropolis-exit-icon {
+  width: 1.35rem;
+  height: 1.35rem;
+  display: block;
+}
+
+.textropolis-word-strip {
+  min-height: 2.1rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 2.65rem;
+  border-bottom: 1px solid rgba(180, 210, 185, 0.2);
   background: rgba(0, 0, 0, 0.18);
 }
 
+.textropolis-word-list-toggle {
+  min-width: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-left: 1px solid rgba(180, 210, 185, 0.18);
+  border-radius: 0;
+  background: rgba(233, 209, 142, 0.08);
+  color: #e9d18e;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.textropolis-word-list-toggle[aria-expanded="true"] {
+  background: rgba(156, 199, 255, 0.14);
+  color: #ffffff;
+}
+
+.textropolis-word-list-toggle:focus-visible {
+  outline: 2px solid rgba(156, 199, 255, 0.5);
+  outline-offset: -2px;
+}
+
+.textropolis-word-list-toggle span {
+  width: 0.58rem;
+  height: 0.58rem;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg) translateY(-0.1rem);
+}
+
+.textropolis-word-list-toggle[aria-expanded="true"] span {
+  transform: rotate(225deg) translate(-0.05rem, -0.05rem);
+}
+
+.textropolis-word-ticker {
+  min-width: 0;
+  min-height: 2rem;
+  position: relative;
+  overflow: hidden;
+}
+
 .textropolis-ticker-track {
-  display: inline-block;
   min-width: max-content;
+  display: inline-flex;
+  align-items: center;
   box-sizing: content-box;
-  padding: 0.32rem 0 0.32rem 100%;
+  padding: 0.32rem 0;
   color: rgba(243, 241, 234, 0.84);
   white-space: nowrap;
   animation: textropolis-ticker var(--ticker-duration, 58s) linear infinite;
   will-change: transform;
 }
 
+.textropolis-ticker-loop {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.textropolis-ticker-item {
+  display: inline-flex;
+  align-items: center;
+}
+
 .textropolis-ticker-word {
-  margin: 0 0.7rem 0 0;
+  margin: 0;
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -261,9 +407,13 @@ a {
   touch-action: manipulation;
 }
 
-.textropolis-ticker-word:not(:last-child)::after {
-  content: " //";
+.textropolis-ticker-separator {
+  margin: 0 0.62rem;
   color: rgba(199, 223, 201, 0.42);
+}
+
+.textropolis-ticker-word.hint {
+  color: #dbeaff;
 }
 
 .textropolis-ticker-word:hover,
@@ -272,15 +422,93 @@ a {
   outline: none;
 }
 
-.textropolis-ticker-track:empty {
-  animation: none;
+.textropolis-ticker-loop.duplicate .textropolis-ticker-word {
+  cursor: default;
+}
+
+.textropolis-ticker-dot {
+  display: inline-block;
+  margin: 0 1rem;
+  color: rgba(199, 223, 201, 0.58);
+  font-size: 1.1rem;
+  line-height: 1;
+  transform: translateY(-0.02rem);
 }
 
 .textropolis-definition-sky {
-  --lane-gap: 3.35rem;
-  min-height: 20.8rem;
+  --lane-gap: clamp(3.15rem, 7svh, 4.35rem);
+  flex: 1 1 20rem;
+  min-height: clamp(16rem, 38svh, 24rem);
   position: relative;
   overflow: hidden;
+}
+
+.textropolis-word-list-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  border: 1px solid rgba(156, 199, 255, 0.34);
+  background: rgba(5, 12, 10, 0.94);
+  box-shadow: inset 0 0 0 1px rgba(243, 241, 234, 0.04);
+}
+
+.textropolis-word-list-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.45rem;
+}
+
+.textropolis-word-list-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr));
+  gap: 0.35rem;
+}
+
+.textropolis-word-list-word {
+  min-height: 2.35rem;
+  display: grid;
+  align-content: center;
+  gap: 0.18rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid rgba(180, 210, 185, 0.18);
+  border-radius: 0;
+  background: rgba(0, 0, 0, 0.24);
+  color: #f3f1ea;
+  font: inherit;
+  text-align: left;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.textropolis-word-list-word.hint {
+  grid-column: span 2;
+  border-color: rgba(156, 199, 255, 0.28);
+  background: rgba(156, 199, 255, 0.09);
+  color: #dbeaff;
+  text-transform: none;
+}
+
+.textropolis-word-list-word small {
+  color: rgba(243, 241, 234, 0.62);
+  font-size: 0.76rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.textropolis-word-list-word:hover,
+.textropolis-word-list-word:focus-visible {
+  border-color: rgba(156, 199, 255, 0.82);
+  outline: none;
+}
+
+.textropolis-word-list-empty {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  color: rgba(243, 241, 234, 0.58);
 }
 
 .textropolis-definition-sky .textropolis-banner {
@@ -328,6 +556,19 @@ a {
   border-top: 0.58rem solid #c7dfc9;
 }
 
+.textropolis-banner.hint .textropolis-plane {
+  background: #9cc7ff;
+  box-shadow: inset -0.58rem 0 0 rgba(0, 0, 0, 0.2);
+}
+
+.textropolis-banner.hint .textropolis-plane::before {
+  border-bottom-color: #e9d18e;
+}
+
+.textropolis-banner.hint .textropolis-plane::after {
+  border-top-color: #e9d18e;
+}
+
 .textropolis-rope {
   width: 1.4rem;
   height: 1px;
@@ -344,15 +585,28 @@ a {
 .textropolis-ad {
   display: inline-block;
   width: max-content;
-  max-width: min(72vw, 54rem);
-  min-width: 18rem;
+  max-width: min(68vw, 52rem);
+  min-width: min(20rem, 68vw);
+  max-height: calc(var(--lane-gap) - 0.2rem);
   padding: 0.22rem 0.65rem;
   border: 1px solid rgba(233, 209, 142, 0.56);
   background: rgba(233, 209, 142, 0.12);
   color: rgba(243, 241, 234, 0.92);
   font-size: 0.88rem;
+  line-height: 1.18;
   white-space: normal;
+  overflow: hidden;
   overflow-wrap: anywhere;
+}
+
+.textropolis-banner.hint .textropolis-rope {
+  background: rgba(156, 199, 255, 0.58);
+}
+
+.textropolis-banner.hint .textropolis-ad {
+  border-color: rgba(156, 199, 255, 0.66);
+  background: rgba(156, 199, 255, 0.13);
+  color: #f7fbff;
 }
 
 .textropolis-current-word {
@@ -365,14 +619,43 @@ a {
   text-transform: uppercase;
 }
 
+.textropolis-current-word.invalid-a {
+  animation: textropolis-invalid-word-a 360ms ease-out;
+}
+
+.textropolis-current-word.invalid-b {
+  animation: textropolis-invalid-word-b 360ms ease-out;
+}
+
 .textropolis-feedback {
   min-height: 1.4rem;
   color: rgba(243, 241, 234, 0.72);
   text-align: center;
 }
 
+.textropolis-feedback.good {
+  color: #c7dfc9;
+}
+
+.textropolis-feedback.good.pulse-a {
+  animation: textropolis-points-pop-a 980ms ease-out forwards;
+}
+
+.textropolis-feedback.good.pulse-b {
+  animation: textropolis-points-pop-b 980ms ease-out forwards;
+}
+
+.textropolis-feedback.warn {
+  color: #e9d18e;
+}
+
+.textropolis-feedback.error {
+  color: #ffb8a8;
+}
+
 .textropolis-keyboard {
   margin-top: auto;
+  flex: 0 0 auto;
   border: 1px solid rgba(180, 210, 185, 0.2);
   background: rgba(0, 0, 0, 0.28);
 }
@@ -387,7 +670,7 @@ a {
 
 .textropolis-controls {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   border-top: 1px solid rgba(180, 210, 185, 0.2);
 }
 
@@ -414,6 +697,11 @@ a {
   touch-action: manipulation;
 }
 
+.textropolis-controls button:disabled {
+  color: rgba(199, 223, 201, 0.32);
+  cursor: default;
+}
+
 .textropolis-letters button:focus-visible,
 .textropolis-controls button:focus-visible {
   background: rgba(156, 199, 255, 0.12);
@@ -427,7 +715,9 @@ a {
 
 @media (hover: hover) {
   .textropolis-letters button:hover,
-  .textropolis-controls button:hover {
+  .textropolis-controls button:not(:disabled):hover,
+  .textropolis-word-list-toggle:hover,
+  .textropolis-exit-button:hover {
     background: rgba(156, 199, 255, 0.12);
   }
 }
@@ -456,7 +746,77 @@ a {
   }
 
   to {
-    transform: translateX(-100%);
+    transform: translateX(-50%);
+  }
+}
+
+@keyframes textropolis-invalid-word-a {
+  0%,
+  100% {
+    color: #ffffff;
+    text-shadow: none;
+  }
+
+  38% {
+    color: #ffb8a8;
+    text-shadow: 0 0 0.75rem rgba(255, 92, 92, 0.38);
+  }
+}
+
+@keyframes textropolis-invalid-word-b {
+  0%,
+  100% {
+    color: #ffffff;
+    text-shadow: none;
+  }
+
+  38% {
+    color: #ffb8a8;
+    text-shadow: 0 0 0.75rem rgba(255, 92, 92, 0.38);
+  }
+}
+
+@keyframes textropolis-points-pop-a {
+  0% {
+    opacity: 0;
+    transform: translateY(0.35rem) scale(0.96);
+  }
+
+  24% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+
+  72% {
+    opacity: 1;
+    transform: translateY(-0.08rem) scale(1);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translateY(-0.45rem) scale(0.98);
+  }
+}
+
+@keyframes textropolis-points-pop-b {
+  0% {
+    opacity: 0;
+    transform: translateY(0.35rem) scale(0.96);
+  }
+
+  24% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+
+  72% {
+    opacity: 1;
+    transform: translateY(-0.08rem) scale(1);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translateY(-0.45rem) scale(0.98);
   }
 }
 
@@ -700,14 +1060,34 @@ a {
     height: min(40rem, calc(100svh - 0.8rem));
     min-height: min(30rem, calc(100svh - 0.8rem));
     gap: clamp(0.32rem, 1.2svh, 0.6rem);
+    overflow-x: hidden;
+    overflow-y: auto;
   }
 
   .textropolis-word-ticker {
     min-height: 1.55rem;
   }
 
+  .textropolis-word-strip {
+    min-height: 1.75rem;
+    grid-template-columns: minmax(0, 1fr) 2.35rem;
+  }
+
   .textropolis-ticker-track {
     padding-block: 0.2rem;
+  }
+
+  .textropolis-word-list-scroll {
+    padding: 0.35rem;
+  }
+
+  .textropolis-word-list-grid {
+    grid-template-columns: repeat(auto-fill, minmax(6.2rem, 1fr));
+    gap: 0.28rem;
+  }
+
+  .textropolis-word-list-word.hint {
+    grid-column: 1 / -1;
   }
 
   .terminal-game-header {
@@ -715,22 +1095,29 @@ a {
     line-height: 1.15;
   }
 
+  .textropolis-exit-button {
+    width: 2rem;
+    min-width: 2rem;
+    height: 2rem;
+  }
+
   .textropolis-banner-flight {
     gap: 0.25rem;
   }
 
   .textropolis-ad {
-    min-width: 14rem;
-    max-width: 76vw;
+    min-width: min(14rem, 74vw);
+    max-width: 74vw;
+    max-height: calc(var(--lane-gap) - 0.18rem);
     padding: 0.16rem 0.45rem;
     font-size: 0.62rem;
     line-height: 1.15;
   }
 
   .textropolis-definition-sky {
-    --lane-gap: 2.35rem;
-    flex: 0 1 14rem;
-    min-height: 14rem;
+    --lane-gap: clamp(2.55rem, 7svh, 3.2rem);
+    flex: 1 1 auto;
+    min-height: clamp(12.25rem, 32svh, 16rem);
   }
 
   .textropolis-current-word {
@@ -758,13 +1145,30 @@ a {
     min-height: clamp(2.4rem, 7.5svh, 3rem);
   }
 
-  .textropolis-city-card {
-    grid-template-columns: minmax(0, 1fr) auto;
+  .textropolis-controls button {
+    font-size: 0.72rem;
+  }
+
+  .textropolis-city-stats {
+    align-self: flex-end;
   }
 
   .nano-editor {
     min-height: 12rem;
     max-height: 44vh;
+  }
+}
+
+@media (max-width: 420px) {
+  .textropolis-city-stats {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0;
+  }
+
+  .textropolis-city-points::before {
+    content: "";
+    margin-right: 0;
   }
 }
 

@@ -11,7 +11,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::data::{is_subanagram, Definition, TextropolisData};
-    use super::state::{GuessResult, SavedProgress, TextropolisState};
+    use super::state::{GuessResult, HintResult, SavedProgress, TextropolisState, HINT_COST};
 
     fn test_data() -> Arc<TextropolisData> {
         let mut definitions = HashMap::new();
@@ -82,7 +82,7 @@ mod tests {
     }
 
     #[test]
-    fn already_found_selection_clears_and_returns_definitions() {
+    fn already_found_selection_stays_selected_and_returns_definitions() {
         let data = test_data();
         let mut game = TextropolisState::with_progress(Arc::clone(&data), SavedProgress::default());
         game.enter_city(0);
@@ -95,7 +95,7 @@ mod tests {
             GuessResult::AlreadyFound { word, definitions }
                 if word == "phone" && definitions.len() == 1
         ));
-        assert_eq!(game.selected_word(), "");
+        assert_eq!(game.selected_word(), "PHONE");
     }
 
     #[test]
@@ -117,11 +117,71 @@ mod tests {
                 "Phoenix".to_string(),
                 vec!["phone".to_string(), "missing".to_string()],
             )]),
+            hints: BTreeMap::new(),
         };
 
         let game = TextropolisState::with_progress(data, progress);
 
         assert_eq!(game.city_found_count(0), 1);
+    }
+
+    #[test]
+    fn old_saved_progress_recomputes_points_from_guesses() {
+        let data = test_data();
+        let progress =
+            serde_json::from_str::<SavedProgress>(r#"{"guessed":{"Phoenix":["phone","hone"]}}"#)
+                .unwrap();
+
+        let game = TextropolisState::with_progress(data, progress);
+
+        assert_eq!(game.earned_points(), 41);
+        assert_eq!(game.spent_points(), 0);
+        assert_eq!(game.available_points(), 41);
+    }
+
+    #[test]
+    fn hints_cost_points_and_remain_spent_after_guessing() {
+        let data = test_data();
+        let mut game = TextropolisState::with_progress(Arc::clone(&data), SavedProgress::default());
+        game.enter_city(0);
+
+        assert!(matches!(
+            game.submit_word("phone"),
+            GuessResult::Accepted { .. }
+        ));
+        assert!(matches!(
+            game.buy_hint(),
+            HintResult::NotEnoughPoints {
+                available: 25,
+                cost: HINT_COST
+            }
+        ));
+
+        assert!(matches!(
+            game.submit_word("hone"),
+            GuessResult::Accepted { .. }
+        ));
+        assert!(matches!(
+            game.buy_hint(),
+            HintResult::Purchased { word, cost, .. }
+                if word == "phoenix" && cost == HINT_COST
+        ));
+        assert_eq!(game.hinted_words(), vec!["phoenix".to_string()]);
+        assert_eq!(game.available_points(), 41 - HINT_COST);
+
+        assert!(matches!(
+            game.submit_word("phoenix"),
+            GuessResult::Accepted { .. }
+        ));
+        assert!(game.hinted_words().is_empty());
+        assert_eq!(game.spent_points(), HINT_COST);
+        assert_eq!(game.available_points(), 90 - HINT_COST);
+
+        let saved = SavedProgress::from(&game);
+        assert_eq!(
+            saved.hints.get("Phoenix"),
+            Some(&vec!["phoenix".to_string()])
+        );
     }
 
     #[test]
