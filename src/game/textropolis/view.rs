@@ -12,7 +12,7 @@ use wasm_bindgen_futures::{spawn_local, JsFuture};
 use super::data::Definition;
 #[cfg(target_arch = "wasm32")]
 use super::data::TextropolisData;
-use super::state::{GuessResult, HintResult, TextropolisState, HINT_COST};
+use super::state::{GuessResult, HintResult, TextropolisState, HINT_POPULATION_COST};
 use super::storage::save_progress;
 
 const SCROLL_DURATION_SECONDS: usize = 52;
@@ -100,10 +100,29 @@ struct TickerItem {
     separator_after: bool,
 }
 
+fn format_population(value: usize) -> String {
+    let digits = value.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, ch) in digits.chars().rev().enumerate() {
+        if index > 0 && index % 3 == 0 {
+            formatted.push(',');
+        }
+        formatted.push(ch);
+    }
+    formatted.chars().rev().collect()
+}
+
+fn format_people(value: usize) -> String {
+    format!("{} ppl", format_population(value))
+}
+
 fn feedback_for_guess(result: &GuessResult) -> (String, FeedbackTone) {
     match result {
         GuessResult::Accepted { word, .. } => (
-            format!("+{} Points", TextropolisState::word_score(word)),
+            format!(
+                "+{}",
+                format_people(TextropolisState::word_population(word))
+            ),
             FeedbackTone::Good,
         ),
         GuessResult::AlreadyFound { .. } => (String::new(), FeedbackTone::Neutral),
@@ -117,11 +136,15 @@ fn feedback_for_guess(result: &GuessResult) -> (String, FeedbackTone) {
 fn feedback_for_hint(result: &HintResult) -> (String, FeedbackTone) {
     match result {
         HintResult::Purchased { cost, .. } => (
-            format!("Hint bought for {cost} pts. Clue incoming."),
+            format!("Hint bought for {}. Clue incoming.", format_people(*cost)),
             FeedbackTone::Good,
         ),
-        HintResult::NotEnoughPoints { available, cost } => (
-            format!("Need {cost} pts for a hint. You have {available}."),
+        HintResult::NotEnoughPopulation { available, cost } => (
+            format!(
+                "Need {} for a hint. Population: {}.",
+                format_people(*cost),
+                format_people(*available)
+            ),
             FeedbackTone::Warn,
         ),
         HintResult::NoWordsAvailable => (
@@ -229,7 +252,7 @@ fn lane_schedule_from(
 
 fn resolve_definition_lanes(definitions: &mut [FlyingDefinition], base_ms: u64) -> Vec<u64> {
     let mut next_launch_ms = vec![base_ms; BANNER_LANES];
-    for lane in 0..BANNER_LANES {
+    for (lane, next_launch) in next_launch_ms.iter_mut().enumerate().take(BANNER_LANES) {
         let mut lane_indices = definitions
             .iter()
             .enumerate()
@@ -267,7 +290,7 @@ fn resolve_definition_lanes(definitions: &mut [FlyingDefinition], base_ms: u64) 
             available_ms = definition.started_ms
                 + lane_launch_gap_ms(definition.duration_ms, definition.travel_units);
         }
-        next_launch_ms[lane] = available_ms;
+        *next_launch = available_ms;
     }
     next_launch_ms
 }
@@ -407,33 +430,30 @@ fn word_list_entries(state: &TextropolisState, filter_by_selected: bool) -> Vec<
     })
     .collect::<Vec<_>>();
 
-    let prefix = if filter_by_selected {
-        state.selected_word().to_ascii_lowercase()
-    } else {
-        String::new()
-    };
-    entries.extend(
-        state
-            .hinted_words()
-            .into_iter()
-            .enumerate()
-            .filter(|(_, word)| prefix.is_empty() || word.starts_with(&prefix))
-            .map(|(index, word)| {
-                let detail = state
-                    .data
-                    .definitions_for(&word)
-                    .and_then(|definitions| definitions.into_iter().next())
-                    .map(|definition| {
-                        format!("{}: {}", definition.part_of_speech, definition.definition)
-                    });
-                WordListEntry {
-                    kind: WordListEntryKind::Hint,
-                    label: format!("hint {}", index + 1),
-                    word,
-                    detail,
-                }
-            }),
-    );
+    let selected_prefix = state.selected_word();
+    if !filter_by_selected || selected_prefix.is_empty() {
+        entries.extend(
+            state
+                .hinted_words()
+                .into_iter()
+                .enumerate()
+                .map(|(index, word)| {
+                    let detail = state
+                        .data
+                        .definitions_for(&word)
+                        .and_then(|definitions| definitions.into_iter().next())
+                        .map(|definition| {
+                            format!("{}: {}", definition.part_of_speech, definition.definition)
+                        });
+                    WordListEntry {
+                        kind: WordListEntryKind::Hint,
+                        label: format!("hint {}", index + 1),
+                        word,
+                        detail,
+                    }
+                }),
+        );
+    }
 
     entries
 }
@@ -519,6 +539,11 @@ fn empty_ticker_entry() -> WordListEntry {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, HashMap};
+    use std::sync::Arc;
+
+    use super::super::data::{Definition, TextropolisData};
+    use super::super::state::{SavedProgress, TextropolisState};
     use super::*;
 
     fn found_entry(word: &str) -> WordListEntry {
@@ -545,6 +570,31 @@ mod tests {
             travel_units: BANNER_REFERENCE_TRAVEL_UNITS,
             text: format!("definition {id}"),
         }
+    }
+
+    fn word_list_test_state(selected_prefix: bool) -> TextropolisState {
+        let mut definitions = HashMap::new();
+        for word in ["phone", "peon"] {
+            definitions.insert(
+                word.to_string(),
+                vec![Definition {
+                    part_of_speech: "noun".to_string(),
+                    definition: format!("{word} definition"),
+                }],
+            );
+        }
+        let data = Arc::new(TextropolisData::from_definitions(definitions));
+        let progress = SavedProgress {
+            guessed: BTreeMap::from([("Phoenix".to_string(), vec!["phone".to_string()])]),
+            hints: BTreeMap::from([("Phoenix".to_string(), vec!["peon".to_string()])]),
+            ..SavedProgress::default()
+        };
+        let mut state = TextropolisState::with_progress(data, progress);
+        state.enter_city(0);
+        if selected_prefix {
+            state.pick_letter(1);
+        }
+        state
     }
 
     #[test]
@@ -583,6 +633,29 @@ mod tests {
 
         assert!(sorted_keys.contains(&"found:alpha#0".to_string()));
         assert!(resorted_keys.contains(&"found:alpha#0".to_string()));
+    }
+
+    #[test]
+    fn unfiltered_word_list_shows_hints() {
+        let state = word_list_test_state(false);
+        let entries = word_list_entries(&state, true);
+
+        assert!(entries
+            .iter()
+            .any(|entry| entry.kind == WordListEntryKind::Hint && entry.word == "peon"));
+    }
+
+    #[test]
+    fn selected_prefix_filters_found_words_and_hides_hints() {
+        let state = word_list_test_state(true);
+        let entries = word_list_entries(&state, true);
+
+        assert!(!entries
+            .iter()
+            .any(|entry| entry.kind == WordListEntryKind::Found && entry.word == "phone"));
+        assert!(!entries
+            .iter()
+            .any(|entry| entry.kind == WordListEntryKind::Hint && entry.word == "peon"));
     }
 
     #[test]
@@ -797,9 +870,13 @@ pub fn TextropolisGame() -> impl IntoView {
     let buy_hint = move |_| {
         if !hint_confirming.get_untracked() {
             let (available, remaining) = load.with_untracked(|load| match load {
-                DictionaryLoad::Ready(state) => {
-                    (state.available_points(), state.remaining_hint_count())
-                }
+                DictionaryLoad::Ready(state) => (
+                    state
+                        .current_city_index()
+                        .map(|index| state.city_population(index))
+                        .unwrap_or(0),
+                    state.remaining_hint_count(),
+                ),
                 _ => (0, 0),
             });
             if remaining == 0 {
@@ -810,10 +887,10 @@ pub fn TextropolisGame() -> impl IntoView {
                 feedback_tick.update(|tick| *tick = tick.wrapping_add(1));
                 return;
             }
-            if available < HINT_COST {
-                let result = HintResult::NotEnoughPoints {
+            if available < HINT_POPULATION_COST {
+                let result = HintResult::NotEnoughPopulation {
                     available,
-                    cost: HINT_COST,
+                    cost: HINT_POPULATION_COST,
                 };
                 let (message, tone) = feedback_for_hint(&result);
                 feedback.set(message);
@@ -822,7 +899,10 @@ pub fn TextropolisGame() -> impl IntoView {
                 return;
             }
             hint_confirming.set(true);
-            feedback.set(format!("Tap hint again to spend {HINT_COST} pts."));
+            feedback.set(format!(
+                "Tap hint again to spend {}.",
+                format_people(HINT_POPULATION_COST)
+            ));
             feedback_tone.set(FeedbackTone::Warn);
             feedback_tick.update(|tick| *tick = tick.wrapping_add(1));
             return;
@@ -885,6 +965,7 @@ pub fn TextropolisGame() -> impl IntoView {
             node_ref=section_ref
             tabindex="0"
             on:mousedown=move |_| focus_game()
+            on:click=move |_| focus_game()
             on:keydown=move |ev| {
                 let key = ev.key();
                 match key.as_str() {
@@ -989,11 +1070,11 @@ fn TextropolisCitySelect(load: RwSignal<DictionaryLoad>) -> impl IntoView {
             <span class="textropolis-select-progress">{move || match load.get() {
                 DictionaryLoad::Ready(state) => {
                     format!(
-                        "{}/{} ({}%) | {} Points",
+                        "{}/{} ({}%) | Population: {}",
                         state.total_found_count(),
                         state.total_word_count(),
                         state.total_percent(),
-                        state.available_points()
+                        format_population(state.available_population())
                     )
                 }
                 _ => String::new(),
@@ -1011,7 +1092,7 @@ fn TextropolisCitySelect(load: RwSignal<DictionaryLoad>) -> impl IntoView {
                         let found = state.city_found_count(index);
                         let total = state.city_total_count(index);
                         let pct = state.city_percent(index);
-                        let points = state.city_points(index);
+                        let population = state.city_population(index);
                         let hint = state.unlock_hint(index);
                         let detail = if unlocked {
                             format!("{found}/{total} ({pct}%)")
@@ -1035,11 +1116,11 @@ fn TextropolisCitySelect(load: RwSignal<DictionaryLoad>) -> impl IntoView {
                                 }
                             >
                                 <span>{city.name}</span>
-                                <span class="textropolis-city-score">
-                                    {if points == 0 {
+                                <span class="textropolis-city-population-summary">
+                                    {if population == 0 {
                                         String::new()
                                     } else {
-                                        format!("{points} pts")
+                                        format_people(population)
                                     }}
                                 </span>
                                 <small>{detail}</small>
@@ -1141,7 +1222,9 @@ fn TextropolisCityScreen(
                                 state.city_percent(index)
                             )}
                         </span>
-                        <span class="textropolis-city-points">{format!("{} pts", state.available_points())}</span>
+                        <span class="textropolis-city-population">
+                            {format_people(state.city_population(index))}
+                        </span>
                     }.into_any()
                 }
                 _ => ().into_any(),
@@ -1259,7 +1342,7 @@ fn TextropolisCityScreen(
             let tick = guess_flash.get();
             if tick == 0 {
                 "textropolis-current-word".to_string()
-            } else if tick % 2 == 0 {
+            } else if tick & 1 == 0 {
                 "textropolis-current-word invalid-a".to_string()
             } else {
                 "textropolis-current-word invalid-b".to_string()
@@ -1271,7 +1354,7 @@ fn TextropolisCityScreen(
             }}
         </div>
         <div class=move || {
-            let pulse = if feedback_tick.get() % 2 == 0 { "pulse-a" } else { "pulse-b" };
+            let pulse = if feedback_tick.get() & 1 == 0 { "pulse-a" } else { "pulse-b" };
             format!("textropolis-feedback {} {}", feedback_tone.get().class_name(), pulse)
         }>
             {move || feedback.get()}
@@ -1435,7 +1518,7 @@ fn TextropolisCityScreen(
                     {move || if hint_confirming.get() {
                         "confirm".to_string()
                     } else {
-                        format!("hint -{HINT_COST}")
+                        format!("hint -{}", format_population(HINT_POPULATION_COST))
                     }}
                 </button>
                 <button type="button" on:click=clear>

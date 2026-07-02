@@ -89,7 +89,10 @@ mod tests {
         let mut ctx = TerminalContext::new();
 
         WgetCommand
-            .run(&mut ctx, &["https://example.com/readme.txt?x=1".to_string()])
+            .run(
+                &mut ctx,
+                &["https://example.com/readme.txt?x=1".to_string()],
+            )
             .unwrap();
 
         let request = ctx.take_fetch_request().unwrap();

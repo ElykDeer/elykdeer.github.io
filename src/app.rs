@@ -152,6 +152,10 @@ pub fn App() -> impl IntoView {
             profile = Some(ctx.profile().clone());
         });
 
+        if output_launches_game(&output) {
+            blur_command_input(command_input_ref);
+        }
+
         if let Some(profile) = profile {
             persist_profile(profile, transcript, next_id);
         }
@@ -776,6 +780,21 @@ fn focus_command_input(command_input_ref: NodeRef<Textarea>) {
     }
 }
 
+fn blur_command_input(command_input_ref: NodeRef<Textarea>) {
+    if let Some(input) = command_input_ref.get_untracked() {
+        let element = input.unchecked_ref::<web_sys::HtmlElement>();
+        let _ = element.blur();
+    }
+}
+
+fn output_launches_game(output: &[OutputBlock]) -> bool {
+    output.iter().any(|block| match block {
+        OutputBlock::Panel { body, .. } => output_launches_game(body),
+        OutputBlock::LaunchGame { .. } => true,
+        _ => false,
+    })
+}
+
 /// Whether the textarea caret sits on its first line (so ArrowUp should recall
 /// history instead of moving the caret up a line).
 fn cursor_on_first_line(command_input_ref: NodeRef<Textarea>) -> bool {
@@ -808,7 +827,7 @@ fn should_focus_terminal_input(ev: &MouseEvent) -> bool {
     };
 
     element
-        .closest("input, textarea, button, a, canvas, [contenteditable='true']")
+        .closest(".terminal-game, input, textarea, button, a, canvas, [contenteditable='true']")
         .ok()
         .flatten()
         .is_none()

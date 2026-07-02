@@ -11,11 +11,27 @@ mod tests {
     use std::sync::Arc;
 
     use super::data::{is_subanagram, Definition, TextropolisData};
-    use super::state::{GuessResult, HintResult, SavedProgress, TextropolisState, HINT_COST};
+    use super::state::{
+        GuessResult, HintResult, SavedProgress, TextropolisState, HINT_POPULATION_COST,
+    };
 
     fn test_data() -> Arc<TextropolisData> {
         let mut definitions = HashMap::new();
         for word in ["phone", "phoenix", "hone", "hoe", "one", "new", "york"] {
+            definitions.insert(
+                word.to_string(),
+                vec![Definition {
+                    part_of_speech: "noun".to_string(),
+                    definition: format!("{word} definition"),
+                }],
+            );
+        }
+        Arc::new(TextropolisData::from_definitions(definitions))
+    }
+
+    fn funded_hint_data() -> Arc<TextropolisData> {
+        let mut definitions = HashMap::new();
+        for word in ["phone", "phoenix", "hone", "pheonix", "johannesburg"] {
             definitions.insert(
                 word.to_string(),
                 vec![Definition {
@@ -118,6 +134,7 @@ mod tests {
                 vec!["phone".to_string(), "missing".to_string()],
             )]),
             hints: BTreeMap::new(),
+            ..SavedProgress::default()
         };
 
         let game = TextropolisState::with_progress(data, progress);
@@ -126,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn old_saved_progress_recomputes_points_from_guesses() {
+    fn old_saved_progress_recomputes_population_from_guesses() {
         let data = test_data();
         let progress =
             serde_json::from_str::<SavedProgress>(r#"{"guessed":{"Phoenix":["phone","hone"]}}"#)
@@ -134,15 +151,47 @@ mod tests {
 
         let game = TextropolisState::with_progress(data, progress);
 
-        assert_eq!(game.earned_points(), 41);
-        assert_eq!(game.spent_points(), 0);
-        assert_eq!(game.available_points(), 41);
+        assert_eq!(game.earned_population(), 410);
+        assert_eq!(game.spent_population(), 0);
+        assert_eq!(game.available_population(), 410);
     }
 
     #[test]
-    fn hints_cost_points_and_remain_spent_after_guessing() {
-        let data = test_data();
-        let mut game = TextropolisState::with_progress(Arc::clone(&data), SavedProgress::default());
+    fn legacy_saved_hints_convert_old_point_cost_to_population() {
+        let data = funded_hint_data();
+        let progress = serde_json::from_str::<SavedProgress>(
+            r#"{"guessed":{"Phoenix":["phone","hone","phoenix"]},"hints":{"Phoenix":["pheonix"]}}"#,
+        )
+        .unwrap();
+
+        let game = TextropolisState::with_progress(data, progress);
+
+        assert_eq!(game.city_earned_population(0), 900);
+        assert_eq!(game.city_spent_population(0), 300);
+        assert_eq!(game.city_population(0), 600);
+
+        let saved = SavedProgress::from(&game);
+        assert_eq!(
+            saved
+                .hint_costs
+                .get("Phoenix")
+                .and_then(|costs| costs.get("pheonix")),
+            Some(&300)
+        );
+    }
+
+    #[test]
+    fn hints_cost_city_population_and_remain_spent_after_guessing() {
+        let data = funded_hint_data();
+        let progress = SavedProgress {
+            guessed: BTreeMap::from([(
+                "Johannesburg".to_string(),
+                vec!["johannesburg".to_string()],
+            )]),
+            hints: BTreeMap::new(),
+            ..SavedProgress::default()
+        };
+        let mut game = TextropolisState::with_progress(Arc::clone(&data), progress);
         game.enter_city(0);
 
         assert!(matches!(
@@ -151,9 +200,9 @@ mod tests {
         ));
         assert!(matches!(
             game.buy_hint(),
-            HintResult::NotEnoughPoints {
-                available: 25,
-                cost: HINT_COST
+            HintResult::NotEnoughPopulation {
+                available: 250,
+                cost: HINT_POPULATION_COST
             }
         ));
 
@@ -162,25 +211,39 @@ mod tests {
             GuessResult::Accepted { .. }
         ));
         assert!(matches!(
-            game.buy_hint(),
-            HintResult::Purchased { word, cost, .. }
-                if word == "phoenix" && cost == HINT_COST
-        ));
-        assert_eq!(game.hinted_words(), vec!["phoenix".to_string()]);
-        assert_eq!(game.available_points(), 41 - HINT_COST);
-
-        assert!(matches!(
             game.submit_word("phoenix"),
             GuessResult::Accepted { .. }
         ));
+
+        assert!(matches!(
+            game.buy_hint(),
+            HintResult::Purchased { word, cost, .. }
+                if word == "pheonix" && cost == HINT_POPULATION_COST
+        ));
+        assert_eq!(game.hinted_words(), vec!["pheonix".to_string()]);
+        assert_eq!(game.city_spent_population(0), HINT_POPULATION_COST);
+        assert_eq!(game.spent_population(), HINT_POPULATION_COST);
+        assert_eq!(game.city_population(0), 100);
+
+        assert!(matches!(
+            game.submit_word("pheonix"),
+            GuessResult::Accepted { .. }
+        ));
         assert!(game.hinted_words().is_empty());
-        assert_eq!(game.spent_points(), HINT_COST);
-        assert_eq!(game.available_points(), 90 - HINT_COST);
+        assert_eq!(game.city_spent_population(0), HINT_POPULATION_COST);
+        assert_eq!(game.city_population(0), 590);
 
         let saved = SavedProgress::from(&game);
         assert_eq!(
             saved.hints.get("Phoenix"),
-            Some(&vec!["phoenix".to_string()])
+            Some(&vec!["pheonix".to_string()])
+        );
+        assert_eq!(
+            saved
+                .hint_costs
+                .get("Phoenix")
+                .and_then(|costs| costs.get("pheonix")),
+            Some(&HINT_POPULATION_COST)
         );
     }
 

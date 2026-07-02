@@ -6,7 +6,14 @@ use serde::{Deserialize, Serialize};
 use super::data::{is_subanagram, percent, sanitize, Definition, TextropolisData};
 use super::storage::load_saved_progress;
 
-pub(super) const HINT_COST: usize = 30;
+const WORD_POPULATION_MULTIPLIER: usize = 10;
+const LEGACY_HINT_POINT_COST: usize = 30;
+const LEGACY_HINT_POPULATION_COST: usize = LEGACY_HINT_POINT_COST * WORD_POPULATION_MULTIPLIER;
+pub(super) const HINT_POPULATION_COST: usize = 800;
+
+type WordSets = BTreeMap<String, BTreeSet<String>>;
+type HintCosts = BTreeMap<String, BTreeMap<String, usize>>;
+type ValidatedProgress = (WordSets, WordSets, HintCosts);
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 pub(super) struct SavedProgress {
@@ -14,6 +21,8 @@ pub(super) struct SavedProgress {
     pub(super) guessed: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub(super) hints: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub(super) hint_costs: BTreeMap<String, BTreeMap<String, usize>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,7 +48,7 @@ pub(super) enum HintResult {
         definitions: Vec<Definition>,
         cost: usize,
     },
-    NotEnoughPoints {
+    NotEnoughPopulation {
         available: usize,
         cost: usize,
     },
@@ -56,19 +65,15 @@ enum Screen {
 pub(super) struct TextropolisState {
     pub(super) data: Arc<TextropolisData>,
     screen: Screen,
-    guessed: BTreeMap<String, BTreeSet<String>>,
-    hints: BTreeMap<String, BTreeSet<String>>,
+    guessed: WordSets,
+    hints: WordSets,
+    hint_costs: HintCosts,
     selected_letters: Vec<usize>,
 }
 
 impl SavedProgress {
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    fn load(
-        data: &TextropolisData,
-    ) -> (
-        BTreeMap<String, BTreeSet<String>>,
-        BTreeMap<String, BTreeSet<String>>,
-    ) {
+    fn load(data: &TextropolisData) -> ValidatedProgress {
         load_saved_progress()
             .and_then(|json| serde_json::from_str::<SavedProgress>(&json).ok())
             .map(|progress| progress.validated(data))
@@ -78,7 +83,7 @@ impl SavedProgress {
     fn validated_words(
         data: &TextropolisData,
         saved_words: BTreeMap<String, Vec<String>>,
-    ) -> BTreeMap<String, BTreeSet<String>> {
+    ) -> WordSets {
         saved_words
             .into_iter()
             .filter_map(|(city, words)| {
@@ -100,17 +105,30 @@ impl SavedProgress {
             .collect()
     }
 
-    fn validated(
-        self,
-        data: &TextropolisData,
-    ) -> (
-        BTreeMap<String, BTreeSet<String>>,
-        BTreeMap<String, BTreeSet<String>>,
-    ) {
+    fn validated(self, data: &TextropolisData) -> ValidatedProgress {
         let guessed = Self::validated_words(data, self.guessed);
         let hints = Self::validated_words(data, self.hints);
+        let hint_costs = hints
+            .iter()
+            .map(|(city, words)| {
+                let costs = words
+                    .iter()
+                    .map(|word| {
+                        let cost = self
+                            .hint_costs
+                            .get(city)
+                            .and_then(|costs| costs.get(word))
+                            .copied()
+                            .filter(|cost| *cost > 0)
+                            .unwrap_or(LEGACY_HINT_POPULATION_COST);
+                        (word.clone(), cost)
+                    })
+                    .collect();
+                (city.clone(), costs)
+            })
+            .collect();
 
-        (guessed, hints)
+        (guessed, hints, hint_costs)
     }
 }
 
@@ -127,6 +145,17 @@ impl From<&TextropolisState> for SavedProgress {
                 .iter()
                 .map(|(city, words)| (city.clone(), words.iter().cloned().collect()))
                 .collect(),
+            hint_costs: state
+                .hints
+                .iter()
+                .map(|(city, words)| {
+                    let costs = words
+                        .iter()
+                        .map(|word| (word.clone(), state.hint_cost(city, word)))
+                        .collect();
+                    (city.clone(), costs)
+                })
+                .collect(),
         }
     }
 }
@@ -134,24 +163,26 @@ impl From<&TextropolisState> for SavedProgress {
 impl TextropolisState {
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub(super) fn new(data: Arc<TextropolisData>) -> Self {
-        let (guessed, hints) = SavedProgress::load(&data);
+        let (guessed, hints, hint_costs) = SavedProgress::load(&data);
         Self {
             data,
             screen: Screen::Select,
             guessed,
             hints,
+            hint_costs,
             selected_letters: Vec::new(),
         }
     }
 
     #[cfg(test)]
     pub(super) fn with_progress(data: Arc<TextropolisData>, progress: SavedProgress) -> Self {
-        let (guessed, hints) = progress.validated(&data);
+        let (guessed, hints, hint_costs) = progress.validated(&data);
         Self {
             data,
             screen: Screen::Select,
             guessed,
             hints,
+            hint_costs,
             selected_letters: Vec::new(),
         }
     }
@@ -218,13 +249,30 @@ impl TextropolisState {
         percent(self.city_found_count(index), self.city_total_count(index))
     }
 
-    pub(super) fn city_points(&self, index: usize) -> usize {
+    pub(super) fn city_earned_population(&self, index: usize) -> usize {
         self.guessed
             .get(self.city_name(index))
             .into_iter()
             .flat_map(|words| words.iter())
-            .map(|word| Self::word_score(word))
+            .map(|word| Self::word_population(word))
             .sum()
+    }
+
+    pub(super) fn city_spent_population(&self, index: usize) -> usize {
+        self.hints
+            .get(self.city_name(index))
+            .map(|words| {
+                words
+                    .iter()
+                    .map(|word| self.hint_cost(self.city_name(index), word))
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+
+    pub(super) fn city_population(&self, index: usize) -> usize {
+        self.city_earned_population(index)
+            .saturating_sub(self.city_spent_population(index))
     }
 
     pub(super) fn total_found_count(&self) -> usize {
@@ -239,25 +287,32 @@ impl TextropolisState {
         percent(self.total_found_count(), self.total_word_count())
     }
 
-    pub(super) fn word_score(word: &str) -> usize {
+    pub(super) fn word_population(word: &str) -> usize {
         let len = word.chars().count();
-        len * len
+        len * len * WORD_POPULATION_MULTIPLIER
     }
 
-    pub(super) fn earned_points(&self) -> usize {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) fn earned_population(&self) -> usize {
         self.guessed
             .values()
             .flat_map(|words| words.iter())
-            .map(|word| Self::word_score(word))
+            .map(|word| Self::word_population(word))
             .sum()
     }
 
-    pub(super) fn spent_points(&self) -> usize {
-        self.hints.values().map(BTreeSet::len).sum::<usize>() * HINT_COST
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) fn spent_population(&self) -> usize {
+        self.hints
+            .iter()
+            .flat_map(|(city, words)| words.iter().map(|word| self.hint_cost(city, word)))
+            .sum()
     }
 
-    pub(super) fn available_points(&self) -> usize {
-        self.earned_points().saturating_sub(self.spent_points())
+    pub(super) fn available_population(&self) -> usize {
+        (0..self.data.cities.len())
+            .map(|index| self.city_population(index))
+            .sum()
     }
 
     pub(super) fn is_unlocked(&self, index: usize) -> bool {
@@ -342,7 +397,7 @@ impl TextropolisState {
         words
     }
 
-    pub(super) fn remaining_hint_count(&self) -> usize {
+    fn remaining_hint_words(&self) -> Vec<String> {
         let found = self
             .guessed
             .get(self.active_city_name())
@@ -356,46 +411,45 @@ impl TextropolisState {
         self.active_city_words()
             .into_iter()
             .filter(|word| !found.contains(word) && !hinted.contains(word))
-            .count()
+            .collect()
+    }
+
+    pub(super) fn remaining_hint_count(&self) -> usize {
+        self.remaining_hint_words().len()
     }
 
     pub(super) fn buy_hint(&mut self) -> HintResult {
-        let available = self.available_points();
-        if available < HINT_COST {
-            return HintResult::NotEnoughPoints {
+        let Some(city_index) = self.current_city_index() else {
+            return HintResult::NoWordsAvailable;
+        };
+        let available = self.city_population(city_index);
+        if available < HINT_POPULATION_COST {
+            return HintResult::NotEnoughPopulation {
                 available,
-                cost: HINT_COST,
+                cost: HINT_POPULATION_COST,
             };
         }
 
-        let found = self
-            .guessed
-            .get(self.active_city_name())
-            .cloned()
-            .unwrap_or_default();
-        let hinted = self
-            .hints
-            .get(self.active_city_name())
-            .cloned()
-            .unwrap_or_default();
-        let Some(word) = self
-            .active_city_words()
-            .into_iter()
-            .find(|word| !found.contains(word) && !hinted.contains(word))
-        else {
+        let mut remaining = self.remaining_hint_words();
+        if remaining.is_empty() {
             return HintResult::NoWordsAvailable;
-        };
+        }
+        let word = remaining.swap_remove(random_index(remaining.len()));
 
         let definitions = self.data.definitions_for(&word).unwrap_or_default();
         self.hints
             .entry(self.active_city_name().to_string())
             .or_default()
             .insert(word.clone());
+        self.hint_costs
+            .entry(self.active_city_name().to_string())
+            .or_default()
+            .insert(word.clone(), HINT_POPULATION_COST);
 
         HintResult::Purchased {
             word,
             definitions,
-            cost: HINT_COST,
+            cost: HINT_POPULATION_COST,
         }
     }
 
@@ -452,12 +506,9 @@ impl TextropolisState {
     #[cfg(test)]
     pub(super) fn submit_word(&mut self, raw: &str) -> GuessResult {
         let result = self.check_word(raw);
-        match &result {
-            GuessResult::Accepted { word, .. } => {
-                self.record_accepted(word);
-                self.selected_letters.clear();
-            }
-            _ => {}
+        if let GuessResult::Accepted { word, .. } = &result {
+            self.record_accepted(word);
+            self.selected_letters.clear();
         }
         result
     }
@@ -503,4 +554,34 @@ impl TextropolisState {
             .or_default()
             .insert(word.to_string());
     }
+
+    fn hint_cost(&self, city: &str, word: &str) -> usize {
+        self.hint_costs
+            .get(city)
+            .and_then(|costs| costs.get(word))
+            .copied()
+            .filter(|cost| *cost > 0)
+            .unwrap_or(LEGACY_HINT_POPULATION_COST)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn random_index(len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    ((js_sys::Math::random() * len as f64).floor() as usize).min(len.saturating_sub(1))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn random_index(len: usize) -> usize {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    if len == 0 {
+        return 0;
+    }
+    let Ok(duration) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+        return 0;
+    };
+    (duration.as_nanos() % len as u128) as usize
 }
