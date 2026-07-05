@@ -675,6 +675,20 @@ mod tests {
     }
 
     #[test]
+    fn priority_schedule_ignores_future_backlog() {
+        let base_ms = 1_000;
+        let active = flying_definition(1, 0, 0, BANNER_BASE_DURATION_MS);
+        let future = flying_definition(2, 1, 6_000, BANNER_BASE_DURATION_MS);
+        let definitions = vec![active, future];
+
+        let (priority_lanes, _) = lane_schedule_from(&definitions, base_ms, false);
+        let (backlog_lanes, _) = lane_schedule_from(&definitions, base_ms, true);
+
+        assert_eq!(priority_lanes[1], base_ms);
+        assert!(backlog_lanes[1] > base_ms);
+    }
+
+    #[test]
     fn lane_resolution_never_makes_later_plane_faster() {
         let mut definitions = vec![
             flying_definition(1, 0, 0, BANNER_FASTEST_DURATION_MS),
@@ -772,7 +786,7 @@ pub fn TextropolisGame() -> impl IntoView {
                 word,
                 entries,
                 FlyingDefinitionKind::Definition,
-                false,
+                true,
             );
         }
         let (message, tone) = feedback_for_guess(&result);
@@ -840,7 +854,7 @@ pub fn TextropolisGame() -> impl IntoView {
                 &word,
                 &entries,
                 FlyingDefinitionKind::Definition,
-                false,
+                true,
             );
             feedback.set(String::new());
             feedback_tone.set(FeedbackTone::Neutral);
