@@ -415,6 +415,16 @@ fn banner_duration_ms(text: &str, queue_pressure: usize, id: u64) -> u64 {
     .max(BANNER_FASTEST_DURATION_MS)
 }
 
+fn confirm_definition_click(pending_word: &mut Option<String>, word: &str) -> bool {
+    if pending_word.as_deref() == Some(word) {
+        *pending_word = None;
+        true
+    } else {
+        *pending_word = Some(word.to_string());
+        false
+    }
+}
+
 fn word_list_entries(state: &TextropolisState, filter_by_selected: bool) -> Vec<WordListEntry> {
     let mut entries = if filter_by_selected {
         state.filtered_found_words()
@@ -689,6 +699,20 @@ mod tests {
     }
 
     #[test]
+    fn definition_confirmation_requires_same_word_twice() {
+        let mut pending = None;
+
+        assert!(!confirm_definition_click(&mut pending, "phone"));
+        assert_eq!(pending.as_deref(), Some("phone"));
+
+        assert!(!confirm_definition_click(&mut pending, "hone"));
+        assert_eq!(pending.as_deref(), Some("hone"));
+
+        assert!(confirm_definition_click(&mut pending, "hone"));
+        assert_eq!(pending, None);
+    }
+
+    #[test]
     fn lane_resolution_never_makes_later_plane_faster() {
         let mut definitions = vec![
             flying_definition(1, 0, 0, BANNER_FASTEST_DURATION_MS),
@@ -738,6 +762,7 @@ pub fn TextropolisGame() -> impl IntoView {
     let guess_flash = RwSignal::new(0_u64);
     let word_list_open = RwSignal::new(false);
     let hint_confirming = RwSignal::new(false);
+    let definition_confirming = RwSignal::new(None::<String>);
     let definitions = RwSignal::new(Vec::<FlyingDefinition>::new());
     let next_banner_id = RwSignal::new(0_u64);
 
@@ -765,6 +790,23 @@ pub fn TextropolisGame() -> impl IntoView {
             DictionaryLoad::Ready(state) => state.check_selected(),
             _ => GuessResult::Empty,
         });
+        if let GuessResult::AlreadyFound { word, .. } = &result {
+            let mut confirmed = false;
+            definition_confirming.update(|pending| {
+                confirmed = confirm_definition_click(pending, word);
+            });
+            if !confirmed {
+                feedback.set(format!(
+                    "Click again for {} definition.",
+                    word.to_ascii_uppercase()
+                ));
+                feedback_tone.set(FeedbackTone::Warn);
+                feedback_tick.update(|tick| *tick = tick.wrapping_add(1));
+                return;
+            }
+        } else {
+            definition_confirming.set(None);
+        }
         let definition_source = match &result {
             GuessResult::Accepted { word, definitions } => Some((word, definitions, true)),
             GuessResult::AlreadyFound { word, definitions } => Some((word, definitions, false)),
@@ -811,6 +853,7 @@ pub fn TextropolisGame() -> impl IntoView {
 
     let pick_letter = move |index: usize| {
         hint_confirming.set(false);
+        definition_confirming.set(None);
         load.update(|load| {
             if let DictionaryLoad::Ready(state) = load {
                 state.pick_letter(index);
@@ -820,6 +863,7 @@ pub fn TextropolisGame() -> impl IntoView {
 
     let backspace = move |_| {
         hint_confirming.set(false);
+        definition_confirming.set(None);
         load.update(|load| {
             if let DictionaryLoad::Ready(state) = load {
                 state.backspace();
@@ -829,6 +873,7 @@ pub fn TextropolisGame() -> impl IntoView {
 
     let clear = move |_| {
         hint_confirming.set(false);
+        definition_confirming.set(None);
         load.update(|load| {
             if let DictionaryLoad::Ready(state) = load {
                 state.clear_selection();
@@ -847,6 +892,19 @@ pub fn TextropolisGame() -> impl IntoView {
                 state.select_word(&word);
             }
         });
+        let mut confirmed = false;
+        definition_confirming.update(|pending| {
+            confirmed = confirm_definition_click(pending, &word);
+        });
+        if !confirmed {
+            feedback.set(format!(
+                "Click again for {} definition.",
+                word.to_ascii_uppercase()
+            ));
+            feedback_tone.set(FeedbackTone::Warn);
+            feedback_tick.update(|tick| *tick = tick.wrapping_add(1));
+            return false;
+        }
         if let Some(entries) = entries {
             queue_definitions(
                 &definitions,
@@ -858,11 +916,15 @@ pub fn TextropolisGame() -> impl IntoView {
             );
             feedback.set(String::new());
             feedback_tone.set(FeedbackTone::Neutral);
+            true
+        } else {
+            false
         }
     };
 
     let replay_hint = move |word: String| {
         hint_confirming.set(false);
+        definition_confirming.set(None);
         let entries = load.with_untracked(|load| match load {
             DictionaryLoad::Ready(state) => state.data.definitions_for(&word),
             _ => None,
@@ -882,6 +944,7 @@ pub fn TextropolisGame() -> impl IntoView {
     };
 
     let buy_hint = move |_| {
+        definition_confirming.set(None);
         if !hint_confirming.get_untracked() {
             let (available, remaining) = load.with_untracked(|load| match load {
                 DictionaryLoad::Ready(state) => (
@@ -967,6 +1030,7 @@ pub fn TextropolisGame() -> impl IntoView {
         feedback_tone.set(FeedbackTone::Neutral);
         word_list_open.set(false);
         hint_confirming.set(false);
+        definition_confirming.set(None);
         definitions.set(Vec::new());
         next_banner_id.set(0);
     };
@@ -990,6 +1054,7 @@ pub fn TextropolisGame() -> impl IntoView {
                     "Backspace" => {
                         ev.prevent_default();
                         hint_confirming.set(false);
+                        definition_confirming.set(None);
                         load.update(|load| {
                             if let DictionaryLoad::Ready(state) = load {
                                 state.backspace();
@@ -999,6 +1064,7 @@ pub fn TextropolisGame() -> impl IntoView {
                     "Escape" => {
                         ev.prevent_default();
                         hint_confirming.set(false);
+                        definition_confirming.set(None);
                         let should_leave = load.with_untracked(|load| {
                             matches!(
                                 load,
@@ -1019,6 +1085,7 @@ pub fn TextropolisGame() -> impl IntoView {
                         if let Some(ch) = key.chars().next().filter(|ch| ch.is_ascii_alphabetic()) {
                             ev.prevent_default();
                             hint_confirming.set(false);
+                            definition_confirming.set(None);
                             load.update(|load| {
                                 if let DictionaryLoad::Ready(state) = load {
                                     state.type_letter(ch);
@@ -1060,6 +1127,7 @@ pub fn TextropolisGame() -> impl IntoView {
                             guess_flash=guess_flash
                             word_list_open=word_list_open
                             hint_confirming=hint_confirming
+                            definition_confirming=definition_confirming
                             definitions=definitions
                             submit=submit
                             pick_letter=pick_letter
@@ -1158,10 +1226,11 @@ fn TextropolisCityScreen(
     guess_flash: RwSignal<u64>,
     word_list_open: RwSignal<bool>,
     hint_confirming: RwSignal<bool>,
+    definition_confirming: RwSignal<Option<String>>,
     definitions: RwSignal<Vec<FlyingDefinition>>,
     submit: impl Fn() + Copy + Send + Sync + 'static,
     pick_letter: impl Fn(usize) + Copy + Send + Sync + 'static,
-    replay_word: impl Fn(String) + Copy + Send + Sync + 'static,
+    replay_word: impl Fn(String) -> bool + Copy + Send + Sync + 'static,
     replay_hint: impl Fn(String) + Copy + Send + Sync + 'static,
     buy_hint: impl Fn(leptos::ev::MouseEvent) + Copy + Send + Sync + 'static,
     backspace: impl Fn(leptos::ev::MouseEvent) + Copy + Send + Sync + 'static,
@@ -1273,10 +1342,16 @@ fn TextropolisCityScreen(
                                                                 class="textropolis-word-list-word"
                                                                 class:hint=entry_kind == WordListEntryKind::Hint
                                                                 on:click=move |_| {
-                                                                    word_list_open.set(false);
                                                                     match entry_kind {
-                                                                        WordListEntryKind::Found => replay_word(selected_word.clone()),
-                                                                        WordListEntryKind::Hint => replay_hint(selected_word.clone()),
+                                                                        WordListEntryKind::Found => {
+                                                                            if replay_word(selected_word.clone()) {
+                                                                                word_list_open.set(false);
+                                                                            }
+                                                                        }
+                                                                        WordListEntryKind::Hint => {
+                                                                            word_list_open.set(false);
+                                                                            replay_hint(selected_word.clone());
+                                                                        }
                                                                         WordListEntryKind::Placeholder => {}
                                                                     }
                                                                 }
@@ -1416,7 +1491,9 @@ fn TextropolisCityScreen(
                                                                 class:hint=entry_kind == WordListEntryKind::Hint
                                                                 on:click=move |_| {
                                                                     match entry_kind {
-                                                                        WordListEntryKind::Found => replay_word(selected_word.clone()),
+                                                                        WordListEntryKind::Found => {
+                                                                            replay_word(selected_word.clone());
+                                                                        }
                                                                         WordListEntryKind::Hint => replay_hint(selected_word.clone()),
                                                                         WordListEntryKind::Placeholder => {}
                                                                     }
@@ -1544,7 +1621,12 @@ fn TextropolisCityScreen(
                 <button type="button" on:click=move |_| submit()>
                     {move || match load.get() {
                         DictionaryLoad::Ready(state) if state.selected_word_is_found() => {
-                            "define".to_string()
+                            let word = state.selected_word().to_ascii_lowercase();
+                            if definition_confirming.get().as_deref() == Some(word.as_str()) {
+                                "confirm".to_string()
+                            } else {
+                                "define".to_string()
+                            }
                         }
                         _ => "submit".to_string(),
                     }}
