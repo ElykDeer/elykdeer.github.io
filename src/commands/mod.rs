@@ -5,7 +5,6 @@ pub mod cat;
 pub mod cd;
 pub mod clear;
 pub mod echo;
-pub mod export;
 pub mod find;
 pub mod grep;
 pub mod head;
@@ -19,6 +18,7 @@ pub mod pip;
 pub mod pwd;
 pub mod python;
 pub mod rm;
+pub mod save;
 pub mod sh;
 pub mod tail;
 pub mod textropolis;
@@ -93,8 +93,8 @@ pub fn registry() -> Vec<Box<dyn Command>> {
         Box::new(sh::ShCommand),
         Box::new(python::PythonCommand),
         Box::new(pip::PipCommand),
-        Box::new(export::ExportCommand),
         Box::new(import::ImportCommand),
+        Box::new(save::SaveCommand),
         Box::new(clear::ClearCommand),
         Box::new(toggle::ToggleCommand),
         Box::new(bubbles::BubblesCommand),
@@ -448,6 +448,49 @@ mod tests {
     }
 
     #[test]
+    fn import_rejects_full_site_backup_without_corrupting_context() {
+        let mut ctx = TerminalContext::new();
+        ctx.vfs_mut()
+            .write_file("/", "/local.md", "keep me")
+            .unwrap();
+        ctx.sync_profile_from_runtime();
+
+        let backup = crate::storage::export_site_backup_json(
+            TerminalContext::new().profile(),
+            Default::default(),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            run_line(&mut ctx, &format!("import '{}'", backup)).as_slice(),
+            [OutputBlock::Error(message)] if message.contains("save box")
+        ));
+        assert_eq!(
+            ctx.vfs().read_file("/", "/local.md").unwrap().content,
+            "keep me"
+        );
+    }
+
+    #[test]
+    fn save_box_commands_return_save_manager() {
+        let mut ctx = TerminalContext::new();
+
+        assert_eq!(run_line(&mut ctx, "save"), vec![OutputBlock::SaveManager]);
+        assert!(matches!(
+            run_line(&mut ctx, "import").as_slice(),
+            [OutputBlock::Error(message)] if message.contains("Usage: import")
+        ));
+        assert!(matches!(
+            run_line(&mut ctx, "export").as_slice(),
+            [OutputBlock::Error(message)] if message.contains("Unknown command")
+        ));
+        assert!(matches!(
+            run_line(&mut ctx, "download").as_slice(),
+            [OutputBlock::Error(message)] if message.contains("Unknown command")
+        ));
+    }
+
+    #[test]
     fn bubbles_hard_launches_hard_mode() {
         let mut ctx = TerminalContext::new();
 
@@ -481,6 +524,7 @@ mod tests {
             "toggle overlay",
             "help pwd extra",
             "textropolis now",
+            "save now",
         ] {
             let mut ctx = TerminalContext::new();
             let output = run_line(&mut ctx, line);

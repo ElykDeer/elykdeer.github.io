@@ -25,6 +25,19 @@ a {
   color: inherit;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .site-shell {
   position: relative;
   min-height: 100vh;
@@ -124,6 +137,10 @@ a {
     rgba(255, 255, 255, 0.035);
 }
 
+.bubbles-game {
+  position: relative;
+}
+
 .terminal-game-canvas {
   width: 100%;
   height: clamp(29rem, 72vh, 42rem);
@@ -133,6 +150,63 @@ a {
   outline: none;
   touch-action: none;
   cursor: crosshair;
+}
+
+.bubbles-resume-button {
+  --resume-bubble-size: clamp(1.75rem, 4.2vw, 2.4rem);
+  position: absolute;
+  right: 0.65rem;
+  bottom: 4rem;
+  z-index: 1;
+  display: grid;
+  justify-items: center;
+  align-items: center;
+  gap: 0.22rem;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #e9d18e;
+  font: 700 0.72rem/1 SFMono-Regular, Consolas, monospace;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+.bubbles-resume-button svg {
+  box-sizing: border-box;
+  width: var(--resume-bubble-size);
+  height: var(--resume-bubble-size);
+  flex: 0 0 auto;
+  padding: 0.38rem;
+  border: 1px solid rgba(233, 209, 142, 0.68);
+  border-radius: 999px;
+  background: rgba(8, 16, 13, 0.9);
+}
+
+.bubbles-resume-button span {
+  order: -1;
+  max-width: 4.9rem;
+  padding: 0.12rem 0.24rem;
+  background: rgba(8, 16, 13, 0.82);
+  text-align: center;
+  text-wrap: balance;
+}
+
+.bubbles-resume-button:hover,
+.bubbles-resume-button:focus-visible {
+  color: #f3f1ea;
+  outline: 2px solid rgba(233, 209, 142, 0.22);
+  outline-offset: 2px;
+}
+
+.bubbles-resume-button:hover svg,
+.bubbles-resume-button:focus-visible svg {
+  border-color: #e9d18e;
+}
+
+.bubbles-resume-button-hidden {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .terminal-game-canvas:focus-visible {
@@ -155,6 +229,79 @@ a {
   color: rgba(199, 223, 201, 0.72);
 }
 
+.save-manager {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.8rem;
+  border: 1px solid rgba(180, 210, 185, 0.18);
+  background: rgba(0, 0, 0, 0.22);
+  color: rgba(243, 241, 234, 0.84);
+}
+
+.save-manager-title {
+  color: #e9d18e;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.save-manager p {
+  margin: 0;
+}
+
+.save-manager-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.save-manager button,
+.save-manager-upload span {
+  min-height: 2.2rem;
+  display: inline-grid;
+  place-items: center;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid rgba(199, 223, 201, 0.28);
+  border-radius: 0;
+  background: rgba(199, 223, 201, 0.08);
+  color: #f3f1ea;
+  font: inherit;
+  cursor: pointer;
+}
+
+.save-manager button:disabled,
+.save-manager-upload input:disabled + span {
+  opacity: 0.52;
+  cursor: default;
+}
+
+.save-manager button:focus-visible,
+.save-manager-upload input:focus-visible + span {
+  border-color: rgba(156, 199, 255, 0.82);
+  outline: 2px solid rgba(156, 199, 255, 0.28);
+  outline-offset: 2px;
+}
+
+.save-manager-upload input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.save-manager-drop {
+  min-height: 4.25rem;
+  display: grid;
+  place-items: center;
+  border: 1px dashed rgba(233, 209, 142, 0.48);
+  color: rgba(233, 209, 142, 0.82);
+}
+
+.save-manager-message {
+  min-height: 1.25rem;
+  color: rgba(199, 223, 201, 0.78);
+}
+
 .textropolis-game {
   width: min(100%, 58rem);
   height: min(42rem, calc(100svh - 1.5rem));
@@ -162,6 +309,7 @@ a {
   gap: clamp(0.45rem, 1.2svh, 0.75rem);
   overflow-x: hidden;
   overflow-y: auto;
+  font-weight: 650;
 }
 
 .textropolis-game:focus-visible {
@@ -230,6 +378,7 @@ a {
 .textropolis-city-card small {
   grid-column: 1 / -1;
   color: rgba(199, 223, 201, 0.58);
+  font-weight: 600;
 }
 
 .textropolis-city-population-summary {
@@ -496,6 +645,7 @@ a {
 .textropolis-word-list-word small {
   color: rgba(243, 241, 234, 0.62);
   font-size: 0.76rem;
+  font-weight: 600;
   line-height: 1.25;
   overflow-wrap: anywhere;
 }
@@ -595,6 +745,7 @@ a {
   background: rgba(233, 209, 142, 0.12);
   color: rgba(243, 241, 234, 0.92);
   font-size: 0.88rem;
+  font-weight: 700;
   line-height: 1.18;
   white-space: normal;
   overflow: hidden;

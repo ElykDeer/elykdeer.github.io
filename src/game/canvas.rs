@@ -10,19 +10,32 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, KeyboardEvent, MouseEvent, TouchEvent};
 
-use super::core::{Board, BubbleColor, BubbleGame, CellCoord, Resolution, COLS, ROWS};
+use super::core::{
+    Board, BubbleColor, BubbleGame, CellCoord, Resolution, SavedBubbleGame, COLS, ROWS,
+};
 
-const STORAGE_KEY: &str = "elyk.bubbles.high-score";
+const HIGH_SCORE_STORAGE_KEY: &str = "elyk.bubbles.high-score";
+const NORMAL_SAVE_STORAGE_KEY: &str = "elyk.bubbles.save.normal";
+const HARD_SAVE_STORAGE_KEY: &str = "elyk.bubbles.save.hard";
+const RESUME_OFFER_MOVES: u8 = 5;
 
 /// Canvas implementation for the terminal bubbles game.
 #[component]
 pub fn BubblesGame(#[prop(default = false)] hard: bool) -> impl IntoView {
     let canvas_ref = NodeRef::<Canvas>::new();
-    let runner = Rc::new(RefCell::new(CanvasRunner::new(load_high_score(), hard)));
+    let high_score = load_high_score();
+    let saved_game = load_saved_game(hard, high_score);
+    let resume_offer_visible = RwSignal::new(saved_game.is_some());
+    let runner = Rc::new(RefCell::new(CanvasRunner::new(
+        high_score, hard, saved_game,
+    )));
+    let status_text = RwSignal::new(runner.borrow().status_text());
     let animation = Rc::new(RefCell::new(AnimationLoop::default()));
 
     let start_runner = Rc::clone(&runner);
     let start_animation = Rc::clone(&animation);
+    let frame_resume_offer_visible = resume_offer_visible;
+    let frame_status_text = status_text;
     Effect::new(move |_| {
         let Some(canvas) = canvas_ref.get() else {
             return;
@@ -42,6 +55,14 @@ pub fn BubblesGame(#[prop(default = false)] hard: bool) -> impl IntoView {
                 let mut runner = frame_runner.borrow_mut();
                 runner.update(timestamp);
                 runner.render(&frame_canvas);
+                let resume_visible = runner.resume_offer_visible();
+                if frame_resume_offer_visible.get_untracked() != resume_visible {
+                    frame_resume_offer_visible.set(resume_visible);
+                }
+                let status = runner.status_text();
+                if frame_status_text.get_untracked() != status {
+                    frame_status_text.set(status);
+                }
             }
 
             if let Some(request_id) = request_animation_frame(&animation_loop) {
@@ -159,14 +180,28 @@ pub fn BubblesGame(#[prop(default = false)] hard: bool) -> impl IntoView {
         _ => {}
     };
 
+    let resume_runner = Rc::clone(&runner);
+    let handle_resume = move |ev: MouseEvent| {
+        ev.prevent_default();
+        ev.stop_propagation();
+        if let Some(canvas) = canvas_ref.get() {
+            let mut runner = resume_runner.borrow_mut();
+            runner.resume_saved();
+            resume_offer_visible.set(runner.resume_offer_visible());
+            runner.render(&canvas);
+            status_text.set(runner.status_text());
+            let _ = canvas.focus();
+        }
+    };
+
     view! {
-        <section class="terminal-game" aria-label="Bubbles">
+        <section class="terminal-game bubbles-game" aria-label="Bubbles">
             <canvas
                 class="terminal-game-canvas"
                 node_ref=canvas_ref
                 tabindex="0"
                 role="application"
-                aria-label="Bubbles game canvas"
+                aria-label="Bubbles game canvas. Aim with mouse, touch, or arrow keys. Shoot with click, tap, Space, or Enter. Hold with H, right click, or the hold slot."
                 on:mousemove=handle_mouse_move
                 on:click=handle_click
                 on:touchmove=handle_touch_move
@@ -175,6 +210,37 @@ pub fn BubblesGame(#[prop(default = false)] hard: bool) -> impl IntoView {
                 on:contextmenu=handle_context_menu
                 on:keydown=handle_keydown
             />
+            <div class="visually-hidden" role="status" aria-live="polite">
+                {move || status_text.get()}
+            </div>
+            <button
+                type="button"
+                class="bubbles-resume-button"
+                class:bubbles-resume-button-hidden=move || !resume_offer_visible.get()
+                aria-hidden=move || (!resume_offer_visible.get()).to_string()
+                disabled=move || !resume_offer_visible.get()
+                tabindex=move || if resume_offer_visible.get() { "0" } else { "-1" }
+                on:click=handle_resume
+            >
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path
+                        d="M20 12a8 8 0 1 1-2.35-5.65"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                    />
+                    <path
+                        d="M20 4v5h-5"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                    />
+                </svg>
+                <span>"Resume last?"</span>
+            </button>
         </section>
     }
 }
@@ -287,6 +353,8 @@ const COLLISION_TOLERANCE: f64 = 1.7;
 #[derive(Debug)]
 struct CanvasRunner {
     game: BubbleGame,
+    hard: bool,
+    resume_offer: ResumeOffer,
     aim_angle: f64,
     projectile: Option<Projectile>,
     particles: Vec<Particle>,
@@ -296,6 +364,40 @@ struct CanvasRunner {
     message: String,
 }
 
+#[derive(Debug)]
+struct ResumeOffer {
+    saved_game: Option<SavedBubbleGame>,
+    moves_remaining: u8,
+}
+
+impl ResumeOffer {
+    fn new(saved_game: Option<SavedBubbleGame>) -> Self {
+        Self {
+            moves_remaining: saved_game.as_ref().map(|_| RESUME_OFFER_MOVES).unwrap_or(0),
+            saved_game,
+        }
+    }
+
+    fn is_visible(&self) -> bool {
+        self.saved_game.is_some() && self.moves_remaining > 0
+    }
+
+    fn record_move(&mut self) {
+        if self.saved_game.is_none() || self.moves_remaining == 0 {
+            return;
+        }
+        self.moves_remaining -= 1;
+        if self.moves_remaining == 0 {
+            self.saved_game = None;
+        }
+    }
+
+    fn take(&mut self) -> Option<SavedBubbleGame> {
+        self.moves_remaining = 0;
+        self.saved_game.take()
+    }
+}
+
 /// A fresh seed each page load so the starting board is random every time.
 fn random_seed() -> u64 {
     let bits = (js_sys::Math::random() * u64::MAX as f64) as u64;
@@ -303,13 +405,15 @@ fn random_seed() -> u64 {
 }
 
 impl CanvasRunner {
-    fn new(high_score: u64, hard: bool) -> Self {
+    fn new(high_score: u64, hard: bool, saved_game: Option<SavedBubbleGame>) -> Self {
         Self {
             game: if hard {
                 BubbleGame::hard(random_seed(), high_score)
             } else {
                 BubbleGame::new(random_seed(), high_score)
             },
+            hard,
+            resume_offer: ResumeOffer::new(saved_game),
             aim_angle: -PI / 2.0,
             projectile: None,
             particles: Vec::new(),
@@ -320,12 +424,63 @@ impl CanvasRunner {
         }
     }
 
+    fn resume_offer_visible(&self) -> bool {
+        self.resume_offer.is_visible()
+    }
+
+    fn status_text(&self) -> String {
+        let held = self.game.held.map(color_name).unwrap_or("empty");
+        format!(
+            "Score {}. Best {}. Drop in {}. Current bubble {}. Held {}. {}",
+            self.game.score,
+            self.game.high_score,
+            self.game.shots_until_drop,
+            color_name(self.game.current_color()),
+            held,
+            self.message
+        )
+    }
+
+    fn resume_saved(&mut self) {
+        let high_score = load_high_score();
+        let Some(saved_game) = self.resume_offer.take() else {
+            return;
+        };
+
+        let stored_game = load_raw_saved_game(self.hard);
+        if !stored_save_allows_resume(stored_game.as_ref(), &saved_game, &self.game.save_state()) {
+            self.message = "Saved board is no longer available.".to_string();
+            self.game.high_score = high_score.max(self.game.score);
+            return;
+        }
+
+        let Some(game) = BubbleGame::from_save(saved_game, high_score, self.hard) else {
+            return;
+        };
+
+        self.game = game;
+        self.projectile = None;
+        self.particles.clear();
+        self.drop_slide = 0.0;
+        self.message = "Resumed saved board.".to_string();
+        save_game(self.hard, &self.game);
+        save_high_score(self.game.high_score);
+    }
+
+    fn finish_move(&mut self) {
+        self.resume_offer.record_move();
+        self.game.high_score = load_high_score().max(self.game.score);
+        save_game(self.hard, &self.game);
+        save_high_score(self.game.high_score);
+    }
+
     fn hold(&mut self) {
         if self.game.game_over || self.projectile.is_some() {
             return;
         }
         self.game.hold();
         self.message = "Held a bubble. Tap hold, right-click, or H to swap.".to_string();
+        self.finish_move();
     }
 
     /// A tap on the hold slot swaps the held bubble (the only way to hold on a
@@ -368,6 +523,7 @@ impl CanvasRunner {
             self.game.high_score = high_score;
             self.projectile = None;
             self.message = "New board. Aim and shoot.".to_string();
+            self.finish_move();
             return;
         }
 
@@ -524,6 +680,9 @@ impl CanvasRunner {
             attachment_cell(&self.game.board, layout, projectile.x, projectile.y, target)
         else {
             self.projectile = None;
+            self.message = "No room to land. Shot discarded.".to_string();
+            self.game.finish_discarded_shot();
+            self.finish_move();
             return;
         };
 
@@ -549,8 +708,8 @@ impl CanvasRunner {
             )
         };
 
-        save_high_score(self.game.high_score);
         self.projectile = None;
+        self.finish_move();
     }
 
     fn spawn_pop_particles(&mut self, layout: BubbleLayout, resolution: &Resolution) {
@@ -950,6 +1109,17 @@ fn color_hex(color: BubbleColor) -> (&'static str, &'static str, &'static str) {
     }
 }
 
+fn color_name(color: BubbleColor) -> &'static str {
+    match color {
+        BubbleColor::Rose => "rose",
+        BubbleColor::Gold => "gold",
+        BubbleColor::Sky => "sky",
+        BubbleColor::Mint => "mint",
+        BubbleColor::Violet => "violet",
+        BubbleColor::Coral => "coral",
+    }
+}
+
 fn distance(ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
     ((ax - bx).powi(2) + (ay - by).powi(2)).sqrt()
 }
@@ -957,7 +1127,7 @@ fn distance(ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
 fn load_high_score() -> u64 {
     web_sys::window()
         .and_then(|window| window.local_storage().ok().flatten())
-        .and_then(|storage| storage.get_item(STORAGE_KEY).ok().flatten())
+        .and_then(|storage| storage.get_item(HIGH_SCORE_STORAGE_KEY).ok().flatten())
         .and_then(|value| value.parse().ok())
         .unwrap_or(0)
 }
@@ -966,14 +1136,89 @@ fn save_high_score(score: u64) {
     if let Some(storage) =
         web_sys::window().and_then(|window| window.local_storage().ok().flatten())
     {
-        let _ = storage.set_item(STORAGE_KEY, &score.to_string());
+        let _ = storage.set_item(HIGH_SCORE_STORAGE_KEY, &score.to_string());
     }
+}
+
+fn save_storage_key(hard: bool) -> &'static str {
+    if hard {
+        HARD_SAVE_STORAGE_KEY
+    } else {
+        NORMAL_SAVE_STORAGE_KEY
+    }
+}
+
+fn load_saved_game(hard: bool, high_score: u64) -> Option<SavedBubbleGame> {
+    let saved_game = load_raw_saved_game(hard)?;
+    BubbleGame::from_save(saved_game.clone(), high_score, hard).map(|_| saved_game)
+}
+
+fn load_raw_saved_game(hard: bool) -> Option<SavedBubbleGame> {
+    let raw = web_sys::window()
+        .and_then(|window| window.local_storage().ok().flatten())
+        .and_then(|storage| storage.get_item(save_storage_key(hard)).ok().flatten())?;
+
+    serde_json::from_str::<SavedBubbleGame>(&raw).ok()
+}
+
+fn stored_save_allows_resume(
+    stored_game: Option<&SavedBubbleGame>,
+    saved_game: &SavedBubbleGame,
+    current_game: &SavedBubbleGame,
+) -> bool {
+    stored_game == Some(saved_game) || stored_game == Some(current_game)
+}
+
+fn save_game(hard: bool, game: &BubbleGame) {
+    let Some(storage) = web_sys::window().and_then(|window| window.local_storage().ok().flatten())
+    else {
+        return;
+    };
+    let Ok(json) = serde_json::to_string(&game.save_state()) else {
+        return;
+    };
+    let _ = storage.set_item(save_storage_key(hard), &json);
 }
 
 pub fn clear_high_score() {
     if let Some(storage) =
         web_sys::window().and_then(|window| window.local_storage().ok().flatten())
     {
-        let _ = storage.remove_item(STORAGE_KEY);
+        let _ = storage.remove_item(HIGH_SCORE_STORAGE_KEY);
+        let _ = storage.remove_item(NORMAL_SAVE_STORAGE_KEY);
+        let _ = storage.remove_item(HARD_SAVE_STORAGE_KEY);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stored_save_allows_original_or_current_game_only() {
+        let original = BubbleGame::new(11, 0).save_state();
+
+        let mut current_game = BubbleGame::new(22, 0);
+        current_game.hold();
+        let current = current_game.save_state();
+
+        let other = BubbleGame::new(33, 0).save_state();
+
+        assert!(stored_save_allows_resume(
+            Some(&original),
+            &original,
+            &current
+        ));
+        assert!(stored_save_allows_resume(
+            Some(&current),
+            &original,
+            &current
+        ));
+        assert!(!stored_save_allows_resume(
+            Some(&other),
+            &original,
+            &current
+        ));
+        assert!(!stored_save_allows_resume(None, &original, &current));
     }
 }

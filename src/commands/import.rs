@@ -1,4 +1,4 @@
-use crate::commands::{usage_error, Command, CommandResult};
+use crate::commands::{Command, CommandResult};
 use crate::storage::import_profile_json;
 use crate::terminal::{OutputBlock, TerminalContext};
 
@@ -14,12 +14,14 @@ impl Command for ImportCommand {
     }
 
     fn long_help(&self) -> &'static str {
-        "Usage: import <profile-json>\n\nReplaces your saved state with the given JSON (as produced by export). Invalid JSON is rejected and leaves your state untouched."
+        "Usage: import <profile-json>\n\nReplaces the terminal profile from compact profile JSON. For full site backups and file upload, use save."
     }
 
     fn run(&self, ctx: &mut TerminalContext, args: &[String]) -> CommandResult {
         if args.is_empty() {
-            return usage_error("Usage: import <profile-json>");
+            return Err(crate::commands::CommandError::new(
+                "Usage: import <profile-json>. For save files, run save.",
+            ));
         }
 
         let json = args.join(" ");

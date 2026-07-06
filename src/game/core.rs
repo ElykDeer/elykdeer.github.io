@@ -1,5 +1,7 @@
 use std::collections::{BTreeSet, VecDeque};
 
+use serde::{Deserialize, Serialize};
+
 pub const ROWS: usize = 13;
 pub const COLS: usize = 12;
 pub const COLORS: [BubbleColor; 6] = [
@@ -13,7 +15,7 @@ pub const COLORS: [BubbleColor; 6] = [
 const SHOTS_PER_DROP: u32 = 5;
 const HARD_SHOTS_PER_DROP: u32 = 4;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum BubbleColor {
     Rose,
     Gold,
@@ -23,7 +25,7 @@ pub enum BubbleColor {
     Coral,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct CellCoord {
     pub row: usize,
     pub col: usize,
@@ -35,7 +37,7 @@ impl CellCoord {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct Board {
     cells: [[Option<BubbleColor>; COLS]; ROWS],
     /// Parity offset for the hex stagger. Toggled whenever a ceiling row is
@@ -288,6 +290,19 @@ pub struct BubbleGame {
     rules: GameRules,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct SavedBubbleGame {
+    version: u8,
+    hard: bool,
+    board: Board,
+    score: u64,
+    shots_until_drop: u32,
+    game_over: bool,
+    held: Option<BubbleColor>,
+    rng_state: u64,
+    queue: Vec<BubbleColor>,
+}
+
 impl BubbleGame {
     pub fn new(seed: u64, high_score: u64) -> Self {
         Self::with_rules(seed, high_score, GameRules::normal())
@@ -325,6 +340,48 @@ impl BubbleGame {
 
     pub fn next_colors(&self) -> Vec<BubbleColor> {
         self.queue.iter().copied().skip(1).take(3).collect()
+    }
+
+    pub fn save_state(&self) -> SavedBubbleGame {
+        SavedBubbleGame {
+            version: 1,
+            hard: self.rules.is_hard(),
+            board: self.board.clone(),
+            score: self.score,
+            shots_until_drop: self.shots_until_drop,
+            game_over: self.game_over,
+            held: self.held,
+            rng_state: self.rng.state,
+            queue: self.queue.iter().copied().collect(),
+        }
+    }
+
+    pub fn from_save(save: SavedBubbleGame, high_score: u64, hard: bool) -> Option<Self> {
+        if save.version != 1 || save.hard != hard {
+            return None;
+        }
+        if !save.is_resumable() || save.queue.len() != 4 || save.board.parity > 1 {
+            return None;
+        }
+
+        let rules = GameRules::for_mode(hard);
+        if save.shots_until_drop == 0 || save.shots_until_drop > rules.shots_per_drop {
+            return None;
+        }
+
+        Some(Self {
+            board: save.board,
+            score: save.score,
+            high_score: high_score.max(save.score),
+            shots_until_drop: save.shots_until_drop,
+            game_over: save.game_over,
+            held: save.held,
+            rng: Lcg {
+                state: save.rng_state.max(1),
+            },
+            queue: save.queue.into(),
+            rules,
+        })
     }
 
     /// Stash the current bubble for later, or swap it back with a held one.
@@ -387,6 +444,12 @@ impl BubbleGame {
         resolution
     }
 
+    pub fn finish_discarded_shot(&mut self) {
+        if !self.game_over {
+            self.sync_future_bubbles();
+        }
+    }
+
     pub fn restart(&mut self) {
         let high_score = self.high_score;
         *self = Self::with_rules(
@@ -433,6 +496,12 @@ impl BubbleGame {
     }
 }
 
+impl SavedBubbleGame {
+    pub fn is_resumable(&self) -> bool {
+        !self.game_over && !self.board.is_cleared()
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct GameRules {
     shots_per_drop: u32,
@@ -440,6 +509,14 @@ struct GameRules {
 }
 
 impl GameRules {
+    const fn for_mode(hard: bool) -> Self {
+        if hard {
+            Self::hard()
+        } else {
+            Self::normal()
+        }
+    }
+
     const fn normal() -> Self {
         Self {
             shots_per_drop: SHOTS_PER_DROP,
@@ -460,6 +537,10 @@ impl GameRules {
         } else {
             COLORS.to_vec()
         }
+    }
+
+    const fn is_hard(self) -> bool {
+        !self.use_active_palette && self.shots_per_drop == HARD_SHOTS_PER_DROP
     }
 }
 
@@ -853,6 +934,65 @@ mod tests {
         game.hold();
         assert_eq!(game.current_color(), first);
         assert_eq!(game.held, Some(second));
+    }
+
+    #[test]
+    fn saved_active_game_round_trips_without_restoring_saved_high_score() {
+        let mut game = BubbleGame::new(7, 900);
+        game.score = 120;
+        game.hold();
+
+        let json = serde_json::to_string(&game.save_state()).unwrap();
+        let save = serde_json::from_str::<SavedBubbleGame>(&json).unwrap();
+        let restored = BubbleGame::from_save(save, 30, false).unwrap();
+
+        assert_eq!(restored.score, 120);
+        assert_eq!(restored.high_score, 120);
+        assert_eq!(restored.held, game.held);
+        assert_eq!(restored.current_color(), game.current_color());
+    }
+
+    #[test]
+    fn saved_terminal_games_cannot_resume() {
+        let mut game = BubbleGame::new(7, 0);
+        game.game_over = true;
+
+        assert!(BubbleGame::from_save(game.save_state(), 0, false).is_none());
+
+        let mut cleared = BubbleGame::new(7, 0);
+        cleared.board = Board::empty();
+
+        assert!(BubbleGame::from_save(cleared.save_state(), 0, false).is_none());
+    }
+
+    #[test]
+    fn saved_games_resume_only_in_matching_mode() {
+        let hard = BubbleGame::hard(7, 0).save_state();
+
+        assert!(BubbleGame::from_save(hard.clone(), 0, true).is_some());
+        assert!(BubbleGame::from_save(hard, 0, false).is_none());
+    }
+
+    #[test]
+    fn saved_games_require_between_moves_queue() {
+        let mut save = BubbleGame::new(7, 0).save_state();
+        save.queue.truncate(1);
+
+        assert!(BubbleGame::from_save(save, 0, false).is_none());
+    }
+
+    #[test]
+    fn discarded_shot_restores_saveable_queue() {
+        let mut game = BubbleGame::new(7, 0);
+        let expected_current = game.next_colors()[0];
+        game.pop_next();
+        assert_eq!(game.current_color(), expected_current);
+        assert_eq!(game.queue.len(), 3);
+
+        game.finish_discarded_shot();
+
+        assert_eq!(game.queue.len(), 4);
+        assert!(BubbleGame::from_save(game.save_state(), 0, false).is_some());
     }
 
     #[test]

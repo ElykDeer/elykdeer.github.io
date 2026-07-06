@@ -13,7 +13,6 @@
     <link data-trunk rel="copy-file" href="textropolis-dictionary.json.gz" />
     <link data-trunk rel="css" href="src/styles.css" />
     <link data-trunk rel="rust" href="Cargo.toml" />
-    <script src="https://cdn.jsdelivr.net/pyodide/v0.27.2/full/pyodide.js"></script>
     <script>
       // Profile storage in IndexedDB (localStorage's ~5MB cap is too small once
       // packages are installed). A single key-value store; first read migrates
@@ -62,6 +61,47 @@
           status_text: response.statusText,
           text: await response.text(),
         });
+      };
+
+      window.elykDownloadText = function (filename, content, type) {
+        const blob = new Blob([content], { type: type || "text/plain;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        link.style.display = "none";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      };
+
+      window.elykDownloadPageSnapshot = function (filename, backupJson) {
+        const clone = document.documentElement.cloneNode(true);
+        clone.querySelector("#elyk-embedded-site-backup")?.remove();
+        const marker = document.createElement("script");
+        marker.id = "elyk-embedded-site-backup";
+        marker.type = "application/json";
+        marker.textContent = backupJson.replaceAll("</script", "<\\/script");
+        clone.querySelector("head")?.appendChild(document.createComment(
+          "This snapshot contains the user's site save data. Full offline play also needs the built JS, WASM, CSS, dictionary, and Pyodide assets available from cache or nearby files."
+        ));
+        clone.querySelector("head")?.appendChild(marker);
+        window.elykDownloadText(
+          filename,
+          "<!doctype html>\n" + clone.outerHTML,
+          "text/html;charset=utf-8"
+        );
+      };
+
+      window.elykInputFileText = function (input) {
+        const file = input?.files?.[0];
+        return file ? file.text() : Promise.resolve(null);
+      };
+
+      window.elykDroppedFileText = function (event) {
+        const file = event?.dataTransfer?.files?.[0];
+        return file ? file.text() : Promise.resolve(null);
       };
 
       let _textropolisDictionary = null;
@@ -160,8 +200,28 @@
 
       // Pyodide is large and async; the Rust side talks to it only through the
       // functions below so the JS-interop surface stays small.
+      const PYODIDE_SCRIPT_URL = "https://cdn.jsdelivr.net/pyodide/v0.27.2/full/pyodide.js";
       let _pyodide = null;
       let _pyodideLoading = null;
+      let _pyodideScriptLoading = null;
+
+      function _elykLoadPyodideScript() {
+        if (window.loadPyodide) return Promise.resolve();
+        if (!_pyodideScriptLoading) {
+          _pyodideScriptLoading = new Promise((resolve, reject) => {
+            const script = document.createElement("script");
+            script.src = PYODIDE_SCRIPT_URL;
+            script.async = true;
+            script.onload = () => resolve();
+            script.onerror = () => {
+              _pyodideScriptLoading = null;
+              reject(new Error("Could not load Pyodide."));
+            };
+            document.head.appendChild(script);
+          });
+        }
+        return _pyodideScriptLoading;
+      }
 
       window.elykPyodideReady = function () {
         return _pyodide !== null;
@@ -170,8 +230,9 @@
       window.elykEnsurePyodide = function () {
         if (_pyodide) return Promise.resolve(_pyodide);
         if (!_pyodideLoading) {
-          console.log("[py] loadPyodide() starting…");
-          _pyodideLoading = loadPyodide()
+          console.log("[py] Pyodide loading starting…");
+          _pyodideLoading = _elykLoadPyodideScript()
+            .then(() => loadPyodide())
             .then((py) => {
               // Packages live in the visible terminal filesystem, not hidden in
               // Pyodide's runtime directories.
@@ -202,6 +263,17 @@ io.ElykCapture = _ElykCapture
         }
         return _pyodideLoading;
       };
+
+      window.addEventListener("load", () => {
+        const preload = () => window.elykEnsurePyodide().catch((err) => {
+          console.warn("[py] Pyodide preload failed:", err);
+        });
+        if ("requestIdleCallback" in window) {
+          window.requestIdleCallback(preload, { timeout: 3500 });
+        } else {
+          window.setTimeout(preload, 1500);
+        }
+      });
 
       // The terminal-visible parts of Pyodide's filesystem. Everything else
       // (/lib, /usr, /tmp, …) is CPython/system state.

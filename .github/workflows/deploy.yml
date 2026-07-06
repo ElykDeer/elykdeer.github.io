@@ -40,6 +40,18 @@ jobs:
           wget -qO- https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz \
             | tar -xzf - -C "$HOME/.cargo/bin"
 
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run tests
+        run: cargo test
+
+      - name: Check WASM target
+        run: cargo check --target wasm32-unknown-unknown
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
       - name: Build
         run: trunk build --release
 

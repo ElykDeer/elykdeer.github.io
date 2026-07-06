@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -7,6 +8,13 @@ use crate::fs::UserOverlay;
 
 pub const PROFILE_STORAGE_KEY: &str = "elyk.profile.v1";
 pub const CURRENT_PROFILE_VERSION: u32 = 1;
+pub const CURRENT_BACKUP_VERSION: u32 = 1;
+pub const BACKUP_STORAGE_KEYS: [&str; 4] = [
+    "elyk.bubbles.high-score",
+    "elyk.bubbles.save.normal",
+    "elyk.bubbles.save.hard",
+    "elyk.textropolis.progress.v1",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProfileV1 {
@@ -15,6 +23,14 @@ pub struct ProfileV1 {
     pub fs_overlay: UserOverlay,
     #[serde(default)]
     pub settings: ProfileSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SiteBackupV1 {
+    pub version: u32,
+    pub profile: ProfileV1,
+    #[serde(default)]
+    pub local_storage: BTreeMap<String, String>,
 }
 
 impl Default for ProfileV1 {
@@ -100,9 +116,48 @@ pub fn export_profile_json(profile: &ProfileV1) -> Result<String, serde_json::Er
 }
 
 pub fn import_profile_json(input: &str) -> Result<ProfileV1, ProfileImportError> {
-    let profile: ProfileV1 = serde_json::from_str(input).map_err(ProfileImportError::Json)?;
+    let value: serde_json::Value = serde_json::from_str(input).map_err(ProfileImportError::Json)?;
+    if value.as_object().is_some_and(|object| {
+        object.contains_key("profile") || object.contains_key("local_storage")
+    }) {
+        return Err(ProfileImportError::InvalidShape(
+            "site backups must be imported from the save box; run import with no arguments"
+                .to_string(),
+        ));
+    }
+    let profile: ProfileV1 = serde_json::from_value(value).map_err(ProfileImportError::Json)?;
     profile.validate()?;
     Ok(profile)
+}
+
+pub fn export_site_backup_json(
+    profile: &ProfileV1,
+    local_storage: BTreeMap<String, String>,
+) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&SiteBackupV1 {
+        version: CURRENT_BACKUP_VERSION,
+        profile: profile.clone(),
+        local_storage: local_storage
+            .into_iter()
+            .filter(|(key, _)| BACKUP_STORAGE_KEYS.contains(&key.as_str()))
+            .collect(),
+    })
+}
+
+pub fn import_site_backup_json(input: &str) -> Result<SiteBackupV1, ProfileImportError> {
+    let backup: SiteBackupV1 = serde_json::from_str(input).map_err(ProfileImportError::Json)?;
+    if backup.version != CURRENT_BACKUP_VERSION {
+        return Err(ProfileImportError::UnsupportedVersion(backup.version));
+    }
+    backup.profile.validate()?;
+    for key in backup.local_storage.keys() {
+        if !BACKUP_STORAGE_KEYS.contains(&key.as_str()) {
+            return Err(ProfileImportError::InvalidShape(format!(
+                "unsupported backup storage key: {key}"
+            )));
+        }
+    }
+    Ok(backup)
 }
 
 #[derive(Debug)]
@@ -221,5 +276,49 @@ mod tests {
 
         let imported = import_profile_json(&exported).unwrap();
         assert_eq!(imported, profile);
+    }
+
+    #[test]
+    fn site_backup_round_trips_profile_and_known_browser_storage() {
+        let profile = ProfileV1::default();
+        let storage = BTreeMap::from([
+            (
+                "elyk.textropolis.progress.v1".to_string(),
+                r#"{"guessed":{}}"#.to_string(),
+            ),
+            ("unknown".to_string(), "ignored".to_string()),
+        ]);
+
+        let exported = export_site_backup_json(&profile, storage).unwrap();
+        let imported = import_site_backup_json(&exported).unwrap();
+
+        assert_eq!(imported.profile, profile);
+        assert_eq!(imported.local_storage.len(), 1);
+        assert!(imported
+            .local_storage
+            .contains_key("elyk.textropolis.progress.v1"));
+    }
+
+    #[test]
+    fn profile_import_rejects_full_site_backup_json() {
+        let exported = export_site_backup_json(&ProfileV1::default(), BTreeMap::new()).unwrap();
+
+        let err = import_profile_json(&exported).unwrap_err();
+
+        assert!(
+            matches!(err, ProfileImportError::InvalidShape(message) if message.contains("save box"))
+        );
+    }
+
+    #[test]
+    fn site_backup_rejects_unknown_storage_keys_on_import() {
+        let err = import_site_backup_json(
+            r#"{"version":1,"profile":{"version":1,"settings":{"theme":"default"}},"local_storage":{"unknown":"bad"}}"#,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(err, ProfileImportError::InvalidShape(message) if message.contains("unknown"))
+        );
     }
 }

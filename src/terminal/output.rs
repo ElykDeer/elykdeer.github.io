@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum OutputBlock {
     Text(String),
     Error(String),
@@ -12,6 +12,7 @@ pub enum OutputBlock {
         path: String,
         content: String,
     },
+    SaveManager,
     NanoEditor {
         path: String,
         content: String,

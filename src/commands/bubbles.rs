@@ -14,7 +14,7 @@ impl Command for BubblesCommand {
 
     fn long_help(&self) -> &'static str {
         "Usage: bubbles [hard|clear]\n\nLaunches the in-terminal bubbles game. Aim with mouse, touch, or arrow keys; \
-shoot with click, tap, Space, or Enter. `bubbles hard` starts hard mode. `bubbles clear` resets your saved high score."
+shoot with click, tap, Space, or Enter. `bubbles hard` starts hard mode. `bubbles clear` resets your saved high score and saved games."
     }
 
     fn run(&self, _ctx: &mut TerminalContext, args: &[String]) -> CommandResult {
@@ -29,7 +29,9 @@ shoot with click, tap, Space, or Enter. `bubbles hard` starts hard mode. `bubble
             }]),
             [arg] if arg == "clear" => {
                 crate::game::clear_high_score();
-                Ok(vec![OutputBlock::Text("High score cleared.".to_string())])
+                Ok(vec![OutputBlock::Text(
+                    "High score and saved games cleared.".to_string(),
+                )])
             }
             _ => usage_error("Usage: bubbles [hard|clear]"),
         }
