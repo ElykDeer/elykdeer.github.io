@@ -3,8 +3,10 @@ pub mod commands;
 pub mod content;
 pub mod fs;
 pub mod game;
+pub mod nano_editor;
 pub mod net;
 pub mod python;
+pub mod save_manager;
 pub mod storage;
 pub mod terminal;
 
