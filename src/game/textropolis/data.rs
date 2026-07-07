@@ -122,9 +122,5 @@ pub(super) fn is_subanagram(source: &str, test: &str) -> bool {
 }
 
 pub(super) fn percent(found: usize, total: usize) -> usize {
-    if total == 0 {
-        0
-    } else {
-        (found * 100) / total
-    }
+    found.saturating_mul(100).checked_div(total).unwrap_or(0)
 }

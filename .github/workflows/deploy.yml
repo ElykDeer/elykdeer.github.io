@@ -23,10 +23,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Add wasm target
-        run: rustup target add wasm32-unknown-unknown
-
       - name: Cache cargo
+        if: ${{ env.ACT != 'true' }}
         uses: actions/cache@v4
         with:
           path: |
@@ -34,6 +32,20 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Install Rust
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup toolchain install stable --profile minimal \
+            --component clippy \
+            --component rustfmt \
+            --target wasm32-unknown-unknown
+          rustup default stable
 
       - name: Install Trunk
         run: |
@@ -59,6 +71,7 @@ jobs:
         run: cp CNAME dist/
 
       - name: Upload Pages artifact
+        if: ${{ env.ACT != 'true' }}
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist
