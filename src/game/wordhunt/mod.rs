@@ -260,7 +260,7 @@ mod tests {
                 .all(|coord| coord.row < 13 && coord.col < 9)
         }));
         assert!(
-            diagonal_word_total(&puzzle) >= (puzzle.words.len() + 3) / 4,
+            diagonal_word_total(&puzzle) >= puzzle.words.len().div_ceil(4),
             "expected diagonal-heavy board, got {} diagonal words out of {}: {:?}",
             diagonal_word_total(&puzzle),
             puzzle.words.len(),

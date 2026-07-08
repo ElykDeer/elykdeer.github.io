@@ -515,6 +515,7 @@ impl WordHuntState {
         self.total_count() > 0 && self.found.len() == self.total_count()
     }
 
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub(super) fn is_resumable(&self) -> bool {
         !self.found.is_empty() && !self.is_complete()
     }
@@ -925,7 +926,8 @@ fn seeded_placement_word_count(
         return 0;
     }
     let minimum = minimum_seeded_word_count(shape, target_words, available_words);
-    ((target_words * 3 + 3) / 4)
+    (target_words * 3)
+        .div_ceil(4)
         .clamp(minimum, 40)
         .min((shape.area() / 4).max(minimum))
         .min(available_words)
@@ -985,7 +987,8 @@ fn is_diagonal_path(path: &[Coord]) -> bool {
 }
 
 fn minimum_diagonal_word_count(_shape: BoardShape, placement_target: usize) -> usize {
-    ((placement_target * 2 + 2) / 3)
+    (placement_target * 2)
+        .div_ceil(3)
         .clamp(4, 14)
         .min(placement_target)
 }
@@ -995,7 +998,7 @@ fn required_diagonal_answer_count(minimum_diagonal_words: usize, total_answers: 
         return 0;
     }
     minimum_diagonal_words
-        .max((total_answers + 4) / 5)
+        .max(total_answers.div_ceil(5))
         .min(total_answers)
 }
 
@@ -1068,7 +1071,7 @@ fn seed_length_allocation(target: usize, max_len: usize, seed_words: &[&str]) ->
 
     allocations
         .into_iter()
-        .flat_map(|(len, count, _)| std::iter::repeat(len).take(count))
+        .flat_map(|(len, count, _)| std::iter::repeat_n(len, count))
         .collect()
 }
 
