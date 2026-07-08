@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 #[cfg(target_arch = "wasm32")]
+use std::collections::HashMap;
+#[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
 
 use leptos::html::Section;
@@ -157,19 +159,36 @@ fn feedback_for_hint(result: &HintResult) -> (String, FeedbackTone) {
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 extern "C" {
-    #[wasm_bindgen(js_name = elykLoadTextropolisDictionary)]
-    fn load_textropolis_dictionary_js() -> js_sys::Promise;
+    #[wasm_bindgen(js_name = elykLoadWordList)]
+    fn load_word_list_js() -> js_sys::Promise;
+
+    #[wasm_bindgen(js_name = elykLoadFullDictionary)]
+    fn load_full_dictionary_js() -> js_sys::Promise;
+
+    #[wasm_bindgen(js_name = elykDictionaryLoadStatus)]
+    fn dictionary_load_status_js() -> String;
 }
 
 #[cfg(target_arch = "wasm32")]
 async fn load_textropolis_data() -> Result<Arc<TextropolisData>, String> {
-    let value = JsFuture::from(load_textropolis_dictionary_js())
+    let value = JsFuture::from(load_word_list_js())
+        .await
+        .map_err(describe_js_error)?;
+    let json = value
+        .as_string()
+        .ok_or_else(|| "word list loader returned a non-string value".to_string())?;
+    TextropolisData::from_word_list_json(&json).map(Arc::new)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn load_textropolis_definitions() -> Result<HashMap<String, Vec<Definition>>, String> {
+    let value = JsFuture::from(load_full_dictionary_js())
         .await
         .map_err(describe_js_error)?;
     let json = value
         .as_string()
         .ok_or_else(|| "dictionary loader returned a non-string value".to_string())?;
-    TextropolisData::from_json(&json).map(Arc::new)
+    serde_json::from_str(&json).map_err(|err| err.to_string())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -182,6 +201,25 @@ fn describe_js_error(value: JsValue) -> String {
                 .and_then(|message| message.as_string())
         })
         .unwrap_or_else(|| "JavaScript error".to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn dictionary_waiting_message() -> String {
+    let status = dictionary_load_status_js();
+    let percent = js_sys::JSON::parse(&status)
+        .ok()
+        .and_then(|value| js_sys::Reflect::get(&value, &JsValue::from_str("percent")).ok())
+        .and_then(|value| value.as_f64())
+        .map(|value| value as usize);
+    match percent {
+        Some(percent) if percent < 100 => format!("Waiting for dictionary ({percent}%)."),
+        _ => "Waiting for dictionary.".to_string(),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn dictionary_waiting_message() -> String {
+    "Waiting for dictionary.".to_string()
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -765,6 +803,8 @@ pub fn TextropolisGame() -> impl IntoView {
     let definition_confirming = RwSignal::new(None::<String>);
     let definitions = RwSignal::new(Vec::<FlyingDefinition>::new());
     let next_banner_id = RwSignal::new(0_u64);
+    let dictionary_loading = RwSignal::new(false);
+    let pending_definition = RwSignal::new(None::<(String, FlyingDefinitionKind)>);
 
     #[cfg(target_arch = "wasm32")]
     spawn_local(async move {
@@ -772,6 +812,47 @@ pub fn TextropolisGame() -> impl IntoView {
             Ok(data) => {
                 let state = TextropolisState::new(Arc::clone(&data));
                 load.set(DictionaryLoad::Ready(state));
+                dictionary_loading.set(true);
+                spawn_local(async move {
+                    match load_textropolis_definitions().await {
+                        Ok(dictionary) => {
+                            load.update(|load| {
+                                if let DictionaryLoad::Ready(state) = load {
+                                    state.load_definitions(dictionary);
+                                }
+                            });
+                            dictionary_loading.set(false);
+                            if let Some((word, kind)) = pending_definition.get_untracked() {
+                                let entries = load.with_untracked(|load| match load {
+                                    DictionaryLoad::Ready(state) => {
+                                        state.data.definitions_for(&word)
+                                    }
+                                    _ => None,
+                                });
+                                if let Some(entries) = entries {
+                                    queue_definitions(
+                                        &definitions,
+                                        &next_banner_id,
+                                        &word,
+                                        &entries,
+                                        kind,
+                                        true,
+                                    );
+                                    pending_definition.set(None);
+                                    feedback.set(String::new());
+                                    feedback_tone.set(FeedbackTone::Neutral);
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            dictionary_loading.set(false);
+                            if pending_definition.get_untracked().is_some() {
+                                feedback.set(format!("Dictionary failed: {err}"));
+                                feedback_tone.set(FeedbackTone::Error);
+                            }
+                        }
+                    }
+                });
             }
             Err(err) => load.set(DictionaryLoad::Failed(err)),
         }
@@ -812,6 +893,9 @@ pub fn TextropolisGame() -> impl IntoView {
             GuessResult::AlreadyFound { word, definitions } => Some((word, definitions, false)),
             _ => None,
         };
+        let definitions_ready = load.with_untracked(
+            |load| matches!(load, DictionaryLoad::Ready(state) if state.definitions_loaded()),
+        );
         if let Some((word, entries, should_record)) = definition_source {
             load.update(|load| {
                 if let DictionaryLoad::Ready(state) = load {
@@ -822,6 +906,13 @@ pub fn TextropolisGame() -> impl IntoView {
                     }
                 }
             });
+            if entries.is_empty() && !definitions_ready {
+                pending_definition.set(Some((word.clone(), FlyingDefinitionKind::Definition)));
+                feedback.set(dictionary_waiting_message());
+                feedback_tone.set(FeedbackTone::Warn);
+                feedback_tick.update(|tick| *tick = tick.wrapping_add(1));
+                return;
+            }
             queue_definitions(
                 &definitions,
                 &next_banner_id,
@@ -906,6 +997,17 @@ pub fn TextropolisGame() -> impl IntoView {
             return false;
         }
         if let Some(entries) = entries {
+            if entries.is_empty()
+                && !load.with_untracked(|load| {
+                    matches!(load, DictionaryLoad::Ready(state) if state.definitions_loaded())
+                })
+            {
+                pending_definition.set(Some((word.clone(), FlyingDefinitionKind::Definition)));
+                feedback.set(dictionary_waiting_message());
+                feedback_tone.set(FeedbackTone::Warn);
+                feedback_tick.update(|tick| *tick = tick.wrapping_add(1));
+                return false;
+            }
             queue_definitions(
                 &definitions,
                 &next_banner_id,
@@ -918,6 +1020,12 @@ pub fn TextropolisGame() -> impl IntoView {
             feedback_tone.set(FeedbackTone::Neutral);
             true
         } else {
+            if dictionary_loading.get_untracked() {
+                pending_definition.set(Some((word.clone(), FlyingDefinitionKind::Definition)));
+                feedback.set(dictionary_waiting_message());
+                feedback_tone.set(FeedbackTone::Warn);
+                feedback_tick.update(|tick| *tick = tick.wrapping_add(1));
+            }
             false
         }
     };
@@ -930,6 +1038,17 @@ pub fn TextropolisGame() -> impl IntoView {
             _ => None,
         });
         if let Some(entries) = entries {
+            if entries.is_empty()
+                && !load.with_untracked(|load| {
+                    matches!(load, DictionaryLoad::Ready(state) if state.definitions_loaded())
+                })
+            {
+                pending_definition.set(Some((word.clone(), FlyingDefinitionKind::Hint)));
+                feedback.set(dictionary_waiting_message());
+                feedback_tone.set(FeedbackTone::Warn);
+                feedback_tick.update(|tick| *tick = tick.wrapping_add(1));
+                return;
+            }
             queue_definitions(
                 &definitions,
                 &next_banner_id,
@@ -1003,14 +1122,26 @@ pub fn TextropolisGame() -> impl IntoView {
         } = &result
         {
             word_list_open.set(false);
-            queue_definitions(
-                &definitions,
-                &next_banner_id,
-                word,
-                hint_definitions,
-                FlyingDefinitionKind::Hint,
-                true,
-            );
+            if hint_definitions.is_empty()
+                && !load.with_untracked(|load| {
+                    matches!(load, DictionaryLoad::Ready(state) if state.definitions_loaded())
+                })
+            {
+                pending_definition.set(Some((word.clone(), FlyingDefinitionKind::Hint)));
+                feedback.set(dictionary_waiting_message());
+                feedback_tone.set(FeedbackTone::Warn);
+                feedback_tick.update(|tick| *tick = tick.wrapping_add(1));
+                return;
+            } else {
+                queue_definitions(
+                    &definitions,
+                    &next_banner_id,
+                    word,
+                    hint_definitions,
+                    FlyingDefinitionKind::Hint,
+                    true,
+                );
+            }
         }
 
         let (message, tone) = feedback_for_hint(&result);
@@ -1101,9 +1232,9 @@ pub fn TextropolisGame() -> impl IntoView {
                 DictionaryLoad::Loading => view! {
                     <div class="terminal-game-header">
                         <span>"textropolis"</span>
-                        <span>"loading dictionary"</span>
+                        <span>"loading words"</span>
                     </div>
-                    <div class="textropolis-loading">"Loading dictionary..."</div>
+                    <div class="textropolis-loading">"Loading words..."</div>
                 }.into_any(),
                 DictionaryLoad::Failed(err) => view! {
                     <div class="terminal-game-header">
@@ -1111,7 +1242,7 @@ pub fn TextropolisGame() -> impl IntoView {
                         <span>"dictionary error"</span>
                     </div>
                     <div class="textropolis-error">
-                        {format!("Could not load textropolis-dictionary.json.gz: {err}")}
+                        {format!("Could not load wordlist.json.gz: {err}")}
                     </div>
                 }.into_any(),
                 DictionaryLoad::Ready(state) => match state.current_city_index() {

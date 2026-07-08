@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -38,6 +38,13 @@ pub struct Definition {
     pub part_of_speech: String,
 }
 
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum WordListPayload {
+    Scoped { textropolis: Vec<String> },
+    Flat(Vec<String>),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct CityData {
     pub(super) name: &'static str,
@@ -48,24 +55,56 @@ pub(super) struct CityData {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct TextropolisData {
     pub(super) definitions: HashMap<String, Vec<Definition>>,
+    pub(super) words: Vec<String>,
+    word_set: HashSet<String>,
     pub(super) cities: Vec<CityData>,
 }
 
 impl TextropolisData {
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    #[allow(dead_code)]
     pub(super) fn from_json(json: &str) -> Result<Self, String> {
+        Self::from_dictionary_json(json)
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(super) fn from_word_list_json(json: &str) -> Result<Self, String> {
+        let words = match serde_json::from_str(json).map_err(|err| err.to_string())? {
+            WordListPayload::Scoped { textropolis } => textropolis,
+            WordListPayload::Flat(words) => words,
+        };
+        Ok(Self::from_words(words))
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn from_dictionary_json(json: &str) -> Result<Self, String> {
         let definitions: HashMap<String, Vec<Definition>> =
             serde_json::from_str(json).map_err(|err| err.to_string())?;
         Ok(Self::from_definitions(definitions))
     }
 
+    #[allow(dead_code)]
     pub(super) fn from_definitions(definitions: HashMap<String, Vec<Definition>>) -> Self {
+        let words = definitions.keys().cloned().collect::<Vec<_>>();
+        let mut data = Self::from_words(words);
+        data.definitions = definitions;
+        data
+    }
+
+    pub(super) fn from_words(words: Vec<String>) -> Self {
+        let mut words = words
+            .into_iter()
+            .filter_map(|word| clean_word(&word))
+            .filter(|word| word.len() > 3)
+            .collect::<Vec<_>>();
+        words.sort();
+        words.dedup();
+        let word_set = words.iter().cloned().collect::<HashSet<_>>();
         let cities = CITIES
             .iter()
             .map(|name| {
                 let sanitized = sanitize(name);
-                let total_words = definitions
-                    .keys()
+                let total_words = words
+                    .iter()
                     .filter(|word| word.len() > 3 && is_subanagram(&sanitized, word))
                     .count();
                 CityData {
@@ -77,9 +116,20 @@ impl TextropolisData {
             .collect();
 
         Self {
-            definitions,
+            definitions: HashMap::new(),
+            words,
+            word_set,
             cities,
         }
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(super) fn load_definitions(&mut self, definitions: HashMap<String, Vec<Definition>>) {
+        self.definitions = definitions;
+    }
+
+    pub(super) fn definitions_loaded(&self) -> bool {
+        !self.definitions.is_empty()
     }
 
     pub(super) fn city(&self, index: usize) -> &CityData {
@@ -91,8 +141,14 @@ impl TextropolisData {
     }
 
     pub(super) fn is_word(&self, word: &str) -> bool {
-        self.definitions.contains_key(word)
+        self.word_set.contains(word)
     }
+}
+
+fn clean_word(raw: &str) -> Option<String> {
+    raw.chars()
+        .all(|ch| ch.is_ascii_alphabetic())
+        .then(|| raw.to_ascii_lowercase())
 }
 
 pub(super) fn sanitize(value: &str) -> String {

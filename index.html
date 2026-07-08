@@ -10,7 +10,8 @@
     <title>Kyle Martin</title>
     <link rel="icon" href="/favicon.ico" />
     <link data-trunk rel="copy-file" href="favicon.ico" />
-    <link data-trunk rel="copy-file" href="textropolis-dictionary.json.gz" />
+    <link data-trunk rel="copy-file" href="wordlist.json.gz" />
+    <link data-trunk rel="copy-file" href="dictionary.json.gz" />
     <link data-trunk rel="css" href="src/styles.css" />
     <link data-trunk rel="rust" href="Cargo.toml" />
     <script>
@@ -84,7 +85,7 @@
         marker.type = "application/json";
         marker.textContent = backupJson.replaceAll("</script", "<\\/script");
         clone.querySelector("head")?.appendChild(document.createComment(
-          "This snapshot contains the user's site save data. Full offline play also needs the built JS, WASM, CSS, dictionary, and Pyodide assets available from cache or nearby files."
+          "This snapshot contains the user's site save data. Full offline play also needs the built JS, WASM, CSS, word assets, and Pyodide assets available from cache or nearby files."
         ));
         clone.querySelector("head")?.appendChild(marker);
         window.elykDownloadText(
@@ -104,32 +105,123 @@
         return file ? file.text() : Promise.resolve(null);
       };
 
-      let _textropolisDictionary = null;
-      window.elykLoadTextropolisDictionary = function () {
-        if (!_textropolisDictionary) {
-          _textropolisDictionary = fetch("/textropolis-dictionary.json.gz").then(async (response) => {
-            if (!response.ok) {
-              throw new Error(`HTTP ${response.status} ${response.statusText}`);
-            }
-            if (!("DecompressionStream" in window)) {
-              throw new Error("This browser cannot decompress the Textropolis dictionary.");
-            }
-            const stream = response.body.pipeThrough(new DecompressionStream("gzip"));
-            return new Response(stream).text();
-          });
-        }
-        return _textropolisDictionary;
+      const ELYK_ASSET_CACHE_VERSION = "word-assets-2026-07-08-scoped";
+      let _wordList = null;
+      let _fullDictionary = null;
+      let _dictionaryStatus = {
+        state: "idle",
+        loaded: 0,
+        total: 0,
+        percent: null,
       };
 
-      window.addEventListener("load", () => {
-        const preload = () => window.elykLoadTextropolisDictionary().catch((err) => {
-          console.warn("[textropolis] dictionary preload failed:", err);
-        });
-        if ("requestIdleCallback" in window) {
-          window.requestIdleCallback(preload, { timeout: 2000 });
-        } else {
-          window.setTimeout(preload, 0);
+      async function _elykLoadGzipText(url, label, status) {
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status} ${response.statusText}`);
         }
+        if (!("DecompressionStream" in window)) {
+          throw new Error(`This browser cannot decompress the ${label}.`);
+        }
+
+        let compressedStream = response.body;
+        const total = Number(response.headers.get("content-length")) || 0;
+        if (status && response.body && total > 0) {
+          const reader = response.body.getReader();
+          const chunks = [];
+          let loaded = 0;
+          status.state = "loading";
+          status.loaded = 0;
+          status.total = total;
+          status.percent = 0;
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            loaded += value.byteLength;
+            status.loaded = loaded;
+            status.percent = Math.min(99, Math.floor((loaded / total) * 100));
+          }
+          compressedStream = new Blob(chunks).stream();
+        }
+        if (!compressedStream) {
+          compressedStream = new Blob([await response.arrayBuffer()]).stream();
+        }
+
+        const stream = compressedStream.pipeThrough(new DecompressionStream("gzip"));
+        const text = await new Response(stream).text();
+        if (status) {
+          status.state = "ready";
+          status.loaded = status.total || status.loaded;
+          status.percent = 100;
+        }
+        return text;
+      }
+
+      async function _elykLoadCachedGzipText(url, label, status) {
+        const cacheKey = `elyk.asset.${ELYK_ASSET_CACHE_VERSION}.${url}`;
+        const cached = await window.elykStorageGet(cacheKey).catch(() => null);
+        if (cached !== null) {
+          if (status) {
+            status.state = "ready";
+            status.loaded = cached.length;
+            status.total = cached.length;
+            status.percent = 100;
+          }
+          return cached;
+        }
+        const text = await _elykLoadGzipText(url, label, status);
+        await window.elykStorageSet(cacheKey, text).catch((err) => {
+          console.warn(`[assets] could not cache ${label}:`, err);
+        });
+        return text;
+      }
+
+      window.elykLoadWordList = function () {
+        if (!_wordList) {
+          _wordList = _elykLoadCachedGzipText("/wordlist.json.gz", "word list");
+        }
+        return _wordList;
+      };
+
+      window.elykLoadFullDictionary = function () {
+        if (!_fullDictionary) {
+          _fullDictionary = _elykLoadCachedGzipText(
+            "/dictionary.json.gz",
+            "dictionary",
+            _dictionaryStatus
+          ).catch((err) => {
+            _dictionaryStatus.state = "failed";
+            throw err;
+          });
+        }
+        return _fullDictionary;
+      };
+
+      window.elykPreloadFullDictionary = function () {
+        window.elykLoadFullDictionary().catch((err) => {
+          console.warn("[dictionary] preload failed:", err);
+        });
+      };
+
+      window.elykDictionaryLoadStatus = function () {
+        return JSON.stringify(_dictionaryStatus);
+      };
+
+      window.elykLoadTextropolisDictionary = window.elykLoadFullDictionary;
+      window.elykLoadWordHuntDictionary = window.elykLoadFullDictionary;
+
+      window.addEventListener("load", () => {
+        const preload = () => window.elykLoadWordList().catch((err) => {
+          console.warn("[words] word list preload failed:", err);
+        });
+        window.setTimeout(() => {
+          if ("requestIdleCallback" in window) {
+            window.requestIdleCallback(preload, { timeout: 6000 });
+          } else {
+            window.setTimeout(preload, 0);
+          }
+        }, 1200);
       });
 
       (() => {

@@ -6,7 +6,7 @@ use leptos::html::{Div, Textarea};
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{KeyboardEvent, MouseEvent};
+use web_sys::{FocusEvent, KeyboardEvent, MouseEvent};
 
 use crate::commands;
 use crate::game::{BubblesGame, TextropolisGame};
@@ -24,6 +24,12 @@ struct TerminalEntry {
     id: usize,
     prompt: String,
     output: Vec<OutputBlock>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HistoryDirection {
+    Previous,
+    Next,
 }
 
 #[component]
@@ -297,52 +303,35 @@ pub fn App() -> impl IntoView {
 
         // Arrows recall history only at the top/bottom line of the textarea;
         // otherwise they move the cursor between lines as usual.
-        if key == "ArrowUp"
+        if (key == "ArrowUp" || key == "Up")
             && !has_native_navigation_modifier(&ev)
             && cursor_on_first_line(command_input_ref)
         {
             ev.prevent_default();
-            let history = ctx.with(|ctx| active_history(ctx, python_mode.get_untracked()));
-            if history.is_empty() {
-                return;
-            }
-
-            let next_cursor = match history_cursor.get_untracked() {
-                Some(index) if index > 0 => index - 1,
-                Some(index) => index,
-                None => {
-                    history_draft.set(command_input.get_untracked());
-                    history.len() - 1
-                }
-            };
-
-            history_cursor.set(Some(next_cursor));
-            if let Some(entry) = history.get(next_cursor) {
-                command_input.set(entry.clone());
-            }
+            recall_history(
+                HistoryDirection::Previous,
+                ctx,
+                command_input,
+                history_cursor,
+                history_draft,
+                python_mode,
+            );
             return;
         }
 
-        if key == "ArrowDown"
+        if (key == "ArrowDown" || key == "Down")
             && !has_native_navigation_modifier(&ev)
             && cursor_on_last_line(command_input_ref)
         {
-            let Some(cursor) = history_cursor.get_untracked() else {
-                return;
-            };
             ev.prevent_default();
-            let history = ctx.with(|ctx| active_history(ctx, python_mode.get_untracked()));
-
-            if cursor + 1 < history.len() {
-                let next_cursor = cursor + 1;
-                history_cursor.set(Some(next_cursor));
-                if let Some(entry) = history.get(next_cursor) {
-                    command_input.set(entry.clone());
-                }
-            } else {
-                history_cursor.set(None);
-                command_input.set(history_draft.get_untracked());
-            }
+            recall_history(
+                HistoryDirection::Next,
+                ctx,
+                command_input,
+                history_cursor,
+                history_draft,
+                python_mode,
+            );
             return;
         }
 
@@ -412,6 +401,32 @@ pub fn App() -> impl IntoView {
         }
     };
 
+    let handle_history_previous_focus = move |ev: FocusEvent| {
+        ev.prevent_default();
+        recall_history(
+            HistoryDirection::Previous,
+            ctx,
+            command_input,
+            history_cursor,
+            history_draft,
+            python_mode,
+        );
+        focus_command_input(command_input_ref);
+    };
+
+    let handle_history_next_focus = move |ev: FocusEvent| {
+        ev.prevent_default();
+        recall_history(
+            HistoryDirection::Next,
+            ctx,
+            command_input,
+            history_cursor,
+            history_draft,
+            python_mode,
+        );
+        focus_command_input(command_input_ref);
+    };
+
     view! {
         <main class="site-shell">
             <section class="terminal-surface" aria-label="Terminal" on:click=focus_terminal_input>
@@ -479,12 +494,22 @@ pub fn App() -> impl IntoView {
                                 }
                             }}
                         </label>
+                        <input
+                            class="terminal-history-sentinel"
+                            type="text"
+                            tabindex="0"
+                            inputmode="none"
+                            autocomplete="off"
+                            aria-label="Previous command"
+                            on:focus=handle_history_previous_focus
+                        />
                         <textarea
                             id="terminal-command"
                             class="terminal-input"
                             rows={move || command_input.with(|value| value.matches('\n').count() + 1).to_string()}
                             autocomplete="off"
                             autocapitalize="none"
+                            enterkeyhint="enter"
                             spellcheck="false"
                             disabled={move || !profile_ready.get()}
                             node_ref=command_input_ref
@@ -494,6 +519,15 @@ pub fn App() -> impl IntoView {
                             }}
                             on:keydown=handle_command_keydown
                         ></textarea>
+                        <input
+                            class="terminal-history-sentinel"
+                            type="text"
+                            tabindex="0"
+                            inputmode="none"
+                            autocomplete="off"
+                            aria-label="Next command"
+                            on:focus=handle_history_next_focus
+                        />
                         <button class="terminal-submit" type="submit" disabled={move || !profile_ready.get()}>"Run"</button>
                     </form>
                 </div>
@@ -781,12 +815,6 @@ fn has_native_navigation_modifier(ev: &KeyboardEvent) -> bool {
     ev.ctrl_key() || ev.alt_key() || ev.meta_key()
 }
 
-fn focus_command_input(command_input_ref: NodeRef<Textarea>) {
-    if let Some(input) = command_input_ref.get() {
-        let _ = input.focus();
-    }
-}
-
 fn blur_command_input(command_input_ref: NodeRef<Textarea>) {
     if let Some(input) = command_input_ref.get_untracked() {
         let element = input.unchecked_ref::<web_sys::HtmlElement>();
@@ -939,6 +967,72 @@ fn active_history(ctx: &TerminalContext, in_python: bool) -> Vec<String> {
     } else {
         ctx.terminal_history()
     }
+}
+
+fn recall_history(
+    direction: HistoryDirection,
+    ctx: ReadSignal<TerminalContext>,
+    command_input: RwSignal<String>,
+    history_cursor: RwSignal<Option<usize>>,
+    history_draft: RwSignal<String>,
+    python_mode: RwSignal<bool>,
+) -> bool {
+    match direction {
+        HistoryDirection::Previous => {
+            let history = ctx.with(|ctx| active_history(ctx, python_mode.get_untracked()));
+            if history.is_empty() {
+                return false;
+            }
+
+            let next_cursor = match history_cursor.get_untracked() {
+                Some(index) if index > 0 => index - 1,
+                Some(index) => index,
+                None => {
+                    history_draft.set(command_input.get_untracked());
+                    history.len() - 1
+                }
+            };
+
+            history_cursor.set(Some(next_cursor));
+            if let Some(entry) = history.get(next_cursor) {
+                command_input.set(entry.clone());
+            }
+            true
+        }
+        HistoryDirection::Next => {
+            let Some(cursor) = history_cursor.get_untracked() else {
+                return false;
+            };
+            let history = ctx.with(|ctx| active_history(ctx, python_mode.get_untracked()));
+
+            if cursor + 1 < history.len() {
+                let next_cursor = cursor + 1;
+                history_cursor.set(Some(next_cursor));
+                if let Some(entry) = history.get(next_cursor) {
+                    command_input.set(entry.clone());
+                }
+            } else {
+                history_cursor.set(None);
+                command_input.set(history_draft.get_untracked());
+            }
+            true
+        }
+    }
+}
+
+fn focus_command_input(command_input_ref: NodeRef<Textarea>) {
+    let Some(textarea) = command_input_ref.get_untracked() else {
+        return;
+    };
+    let _ = textarea.focus();
+    let len = textarea.value().len() as u32;
+    let _ = textarea.set_selection_range(len, len);
+
+    request_animation_frame(move || {
+        let _ = textarea.focus();
+        let len = textarea.value().len() as u32;
+        let _ = textarea.set_selection_range(len, len);
+    });
 }
 
 fn is_repl_exit(line: &str) -> bool {

@@ -9,11 +9,13 @@ use crate::fs::UserOverlay;
 pub const PROFILE_STORAGE_KEY: &str = "elyk.profile.v1";
 pub const CURRENT_PROFILE_VERSION: u32 = 1;
 pub const CURRENT_BACKUP_VERSION: u32 = 1;
-pub const BACKUP_STORAGE_KEYS: [&str; 4] = [
+pub const BACKUP_STORAGE_KEYS: [&str; 6] = [
     "elyk.bubbles.high-score",
     "elyk.bubbles.save.normal",
     "elyk.bubbles.save.hard",
+    "elyk.bubbles.progress.v1",
     "elyk.textropolis.progress.v1",
+    "elyk.wordhunt.progress.v1",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

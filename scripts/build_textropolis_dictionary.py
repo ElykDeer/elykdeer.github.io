@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""Build the city-scoped Textropolis dictionary.
+"""Build the Textropolis dictionary, Word Hunt supplement, and shared word assets.
 
-The game consumes a JSON object shaped as:
+The full dictionary assets consume JSON objects shaped as:
 
     { "word": [{ "definition": "...", "part_of_speech": "noun" }] }
 
+The fast startup word list is a JSON object shaped as:
+
+    { "textropolis": ["word"], "wordhunt": ["word", "wordhunt", ...] }
+
 This script keeps that contract while using ESDB/SCOWL as the spelling and
 inflection gate and Open English WordNet as the primary definition source.
-Only words playable from the configured city names are written to the shipped
-dictionary.
+Textropolis receives only words playable from the configured city names. Word
+Hunt receives a supplemental all-safe 4+ letter dictionary with Textropolis
+overlaps removed.
 """
 
 from __future__ import annotations
@@ -60,6 +65,12 @@ SOURCE_NOTES = {
         "role": "definitions and part-of-speech labels",
         "license": "CC-BY 4.0",
     },
+    "webster_1913": {
+        "name": "Webster's Unabridged English Dictionary",
+        "url": "https://github.com/matthewreagan/WebstersEnglishDictionary",
+        "role": "fallback definitions for safe words missing from WordNet",
+        "license": "Project Gutenberg Webster source; JSON mirror notes GPL-2.0 for generated output",
+    },
     "esdb": {
         "name": "English Speller Database / SCOWL rel-2026.02.25 en_US-large",
         "url": "https://github.com/en-wl/wordlist-diff/tree/rel-2026.02.25",
@@ -72,6 +83,12 @@ SOURCE_NOTES = {
         "role": "legacy carryover filters and small project-specific additions",
         "license": "project-local curation",
     },
+    "generated_derivation": {
+        "name": "Generated derivational fallbacks",
+        "url": "scripts/build_textropolis_dictionary.py",
+        "role": "definitions for safe derived words attached to already-defined bases",
+        "license": "project-local generated text",
+    },
 }
 
 WORD_RE = re.compile(r"^[a-z]+$")
@@ -83,6 +100,31 @@ PART_OF_SPEECH = {
     "a": "adjective",
     "s": "adjective",
     "r": "adverb",
+}
+
+FUNCTION_PARTS_OF_SPEECH = {
+    "pn": "pronoun",
+    "d": "determiner",
+    "pre": "preposition",
+    "pp": "preposition",
+    "c": "conjunction",
+    "pl": "plural noun",
+    "i": "interjection",
+    "s": "spoken form",
+}
+
+FUNCTION_DEFINITIONS = {
+    "pronoun": "a pronoun or pronoun form in standard English",
+    "determiner": "a determiner used before a noun phrase in standard English",
+    "preposition": "a preposition or prepositional form in standard English",
+    "conjunction": "a conjunction used to connect words, phrases, or clauses",
+    "plural noun": "a noun used chiefly or only in plural form",
+    "interjection": "an interjection used to express emotion, reaction, or emphasis",
+    "spoken form": "an informal spoken form used in standard English contexts",
+}
+
+FUNCTION_DEFINITION_OVERRIDES = {
+    "their": ("determiner", "belonging to or associated with the people or things previously mentioned"),
 }
 
 SCOWL_EXCLUDE_PATTERNS = [
@@ -148,6 +190,7 @@ IRREGULAR_VERB_FORMS = {
     "laid",
     "led",
     "left",
+    "lent",
     "lost",
     "made",
     "met",
@@ -305,6 +348,15 @@ def is_playable(word: str) -> bool:
     return bool(WORD_RE.fullmatch(word)) and bool(city_matches(word))
 
 
+def is_wordhunt_word(word: str) -> bool:
+    return bool(WORD_RE.fullmatch(word)) and len(word) >= 4 and not is_roman_numeral(word)
+
+
+def clean_dictionary_word(raw: str) -> str | None:
+    word = raw.strip().lower()
+    return word if WORD_RE.fullmatch(word) else None
+
+
 def add_definition(
     definitions: dict[str, list[dict[str, str]]],
     word: str,
@@ -369,6 +421,9 @@ def scowl_poses(raw: str) -> list[str]:
         poses.append("adjective")
     if "av" in raw or raw in {"r", "r?"}:
         poses.append("adverb")
+    for token, part_of_speech in FUNCTION_PARTS_OF_SPEECH.items():
+        if re.search(rf"(^|[_/]){re.escape(token)}($|[_/?])", raw):
+            poses.append(part_of_speech)
     return poses
 
 
@@ -429,14 +484,7 @@ def noun_like_inflection(base: str, surface: str) -> bool:
 
 
 def verb_like_inflection(base: str, surface: str) -> bool:
-    if surface == base:
-        return False
-    return (
-        surface in IRREGULAR_VERB_FORMS
-        or surface.endswith("ed")
-        or surface.endswith("ing")
-        or (surface.endswith("s") and not surface.endswith("ss"))
-    )
+    return surface != base
 
 
 def comparative_like_inflection(base: str, surface: str) -> bool:
@@ -458,15 +506,18 @@ def relation_for(part_of_speech: str, surface: str, index: int, count: int) -> s
         return "inflected form of"
     if part_of_speech in {"adjective", "adverb"}:
         return "comparative of" if index == 0 else "superlative of" if index == 1 else "inflected form of"
+    if part_of_speech in set(FUNCTION_PARTS_OF_SPEECH.values()):
+        return "form of"
     return "inflected form of"
 
 
 def parse_scowl(
     scowl_path: Path,
     esdb_words: set[str],
-) -> tuple[set[str], dict[str, list[Inflection]], set[str], dict[str, int]]:
+) -> tuple[set[str], dict[str, list[Inflection]], set[str], dict[str, str], dict[str, int]]:
     safe_words: set[str] = set()
     legacy_source_words: set[str] = set()
+    function_words: dict[str, str] = {}
     inflections: dict[str, list[Inflection]] = collections.defaultdict(list)
     last_safe_base_by_pos: dict[str, str] = {}
     stats = collections.Counter()
@@ -522,6 +573,8 @@ def parse_scowl(
         if base and base in safe_words:
             for part_of_speech in poses:
                 last_safe_base_by_pos[part_of_speech] = base
+                if part_of_speech in FUNCTION_DEFINITIONS:
+                    function_words.setdefault(base, part_of_speech)
 
         surfaces = [surface for surface in raw_surfaces if surface and surface in esdb_words]
         if not surfaces:
@@ -538,18 +591,24 @@ def parse_scowl(
                 selected = [surface for surface in surfaces if verb_like_inflection(inflection_base, surface)]
             elif part_of_speech in {"adjective", "adverb"}:
                 selected = [surface for surface in surfaces if comparative_like_inflection(inflection_base, surface)]
+            elif part_of_speech in FUNCTION_DEFINITIONS:
+                selected = [surface for surface in surfaces if surface != inflection_base]
             else:
                 selected = []
 
             for index, surface in enumerate(selected):
                 safe_words.add(surface)
+                if part_of_speech in FUNCTION_DEFINITIONS:
+                    function_words.setdefault(surface, part_of_speech)
+                    continue
                 relation = relation_for(part_of_speech, surface, index, len(selected))
                 inflections[surface].append(Inflection(inflection_base, part_of_speech, relation))
 
     stats["safe_words"] = len(safe_words)
     stats["legacy_source_words"] = len(legacy_source_words)
+    stats["function_words"] = len(function_words)
     stats["inflected_surfaces"] = len(inflections)
-    return safe_words, inflections, legacy_source_words, dict(stats)
+    return safe_words, inflections, legacy_source_words, function_words, dict(stats)
 
 
 def load_wordnet_definitions(wordnet_zip: Path, safe_words: set[str]) -> dict[str, list[dict[str, str]]]:
@@ -569,6 +628,29 @@ def load_wordnet_definitions(wordnet_zip: Path, safe_words: set[str]) -> dict[st
                         continue
                     for definition in synset_definitions[:2]:
                         add_definition(definitions, member, part_of_speech, definition)
+    return definitions
+
+
+def normalize_webster_definition(raw: str) -> str:
+    definition = " ".join(raw.replace("\n", " ").split())
+    definition = re.sub(r"\bDefn:\s*", "", definition)
+    definition = re.sub(r"\s+", " ", definition).strip()
+    return definition
+
+
+def load_webster_definitions(webster_json: Path | None, safe_words: set[str]) -> dict[str, list[dict[str, str]]]:
+    definitions: dict[str, list[dict[str, str]]] = collections.defaultdict(list)
+    if webster_json is None:
+        return definitions
+    raw = json.loads(webster_json.read_text())
+    for word, definition in raw.items():
+        clean = clean_dictionary_word(word)
+        if not clean or clean not in safe_words or not is_wordhunt_word(clean):
+            continue
+        definition = normalize_webster_definition(str(definition))
+        if not definition:
+            continue
+        add_definition(definitions, clean, "word", definition)
     return definitions
 
 
@@ -619,12 +701,172 @@ def load_manual_definitions() -> dict[str, list[dict[str, str]]]:
     return definitions
 
 
+def load_function_word_definitions(function_words: dict[str, str]) -> dict[str, list[dict[str, str]]]:
+    definitions: dict[str, list[dict[str, str]]] = collections.defaultdict(list)
+    for word, part_of_speech in function_words.items():
+        if not is_wordhunt_word(word):
+            continue
+        override = FUNCTION_DEFINITION_OVERRIDES.get(word)
+        if override:
+            part_of_speech, definition = override
+        else:
+            definition = FUNCTION_DEFINITIONS.get(part_of_speech)
+        if definition:
+            add_definition(definitions, word, part_of_speech, definition)
+    return definitions
+
+
+def preferred_base(
+    definitions: dict[str, list[dict[str, str]]],
+    candidates: list[str],
+    parts_of_speech: tuple[str, ...],
+) -> str | None:
+    for candidate in candidates:
+        if not candidate or candidate not in definitions:
+            continue
+        entries = definitions[candidate]
+        if any(entry["part_of_speech"] in parts_of_speech for entry in entries):
+            return candidate
+    return None
+
+
+def dedup_candidates(candidates: list[str]) -> list[str]:
+    seen = set()
+    deduped = []
+    for candidate in candidates:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            deduped.append(candidate)
+    return deduped
+
+
+def doubled_stem_candidate(stem: str) -> str | None:
+    if len(stem) > 2 and stem[-1] == stem[-2]:
+        return stem[:-1]
+    return None
+
+
+def generated_derivation(
+    word: str,
+    definitions: dict[str, list[dict[str, str]]],
+) -> tuple[str, str] | None:
+    if word.endswith("ly") and len(word) > 4:
+        candidates = [word[:-2]]
+        if word.endswith("ily"):
+            candidates.insert(0, f"{word[:-3]}y")
+        if word.endswith("ically"):
+            candidates.insert(0, f"{word[:-6]}ic")
+        if word.endswith("ally"):
+            candidates.append(f"{word[:-4]}al")
+        if word.endswith("ably"):
+            candidates.append(f"{word[:-4]}able")
+        if word.endswith("ibly"):
+            candidates.append(f"{word[:-4]}ible")
+        base = preferred_base(definitions, dedup_candidates(candidates), ("adjective", "adverb"))
+        if base:
+            return "adverb", f"in a manner characterized by {base.upper()}"
+
+    if word.endswith("ness") and len(word) > 7:
+        stem = word[:-4]
+        candidates = [stem]
+        if stem.endswith("i"):
+            candidates.insert(0, f"{stem[:-1]}y")
+        base = preferred_base(definitions, dedup_candidates(candidates), ("adjective",))
+        if base:
+            return "noun", f"the quality or state of being {base.upper()}"
+
+    if word.endswith("ee") and len(word) > 5:
+        base = preferred_base(definitions, [word[:-2], word[:-1]], ("verb",))
+        if base:
+            return "noun", f"one who is the object of {base.upper()}"
+
+    if word.endswith("er") and len(word) > 5:
+        stem = word[:-2]
+        candidates = [stem, word[:-1]]
+        if doubled := doubled_stem_candidate(stem):
+            candidates.append(doubled)
+        base = preferred_base(definitions, dedup_candidates(candidates), ("verb",))
+        if base:
+            return "noun", f"one who or that performs {base.upper()}"
+
+    if word.endswith("or") and len(word) > 5:
+        stem = word[:-2]
+        candidates = [stem, f"{stem}e"]
+        if doubled := doubled_stem_candidate(stem):
+            candidates.append(doubled)
+        base = preferred_base(definitions, dedup_candidates(candidates), ("verb",))
+        if base:
+            return "noun", f"one who or that performs {base.upper()}"
+
+    if word.endswith("ism") and len(word) > 6:
+        stem = word[:-3]
+        candidates = [stem]
+        if stem.endswith("i"):
+            candidates.insert(0, f"{stem[:-1]}y")
+        base = preferred_base(definitions, dedup_candidates(candidates), ("noun", "adjective"))
+        if base:
+            return "noun", f"a doctrine, practice, or system associated with {base.upper()}"
+
+    if word.endswith("ist") and len(word) > 6:
+        base = preferred_base(definitions, [f"{word[:-3]}ism", word[:-3]], ("noun", "adjective"))
+        if base:
+            return "noun", f"a person associated with {base.upper()}"
+
+    if word.endswith("ize") and len(word) > 6:
+        stem = word[:-3]
+        candidates = [stem, f"{stem}e"]
+        if stem.endswith("i"):
+            candidates.append(f"{stem[:-1]}y")
+        base = preferred_base(definitions, dedup_candidates(candidates), ("noun", "adjective"))
+        if base:
+            return "verb", f"to make or become {base.upper()}"
+
+    if word.endswith("ization") and len(word) > 10:
+        base = preferred_base(definitions, [f"{word[:-7]}ize"], ("verb",))
+        if base:
+            return "noun", f"the act or process of {base.upper()}"
+
+    if word.endswith("al") and len(word) > 5:
+        base = preferred_base(definitions, [word[:-2]], ("noun", "adjective"))
+        if base:
+            return "adjective", f"of or relating to {base.upper()}"
+
+    return None
+
+
+def add_generated_derivations(
+    definitions: dict[str, list[dict[str, str]]],
+    sources: dict[str, set[str]],
+    candidate_words: set[str],
+) -> int:
+    added = 0
+    for _ in range(4):
+        round_added = 0
+        for word in sorted(candidate_words):
+            if word in definitions:
+                continue
+            generated = generated_derivation(word, definitions)
+            if not generated:
+                continue
+            part_of_speech, definition = generated
+            if add_definition(definitions, word, part_of_speech, definition):
+                sources[word].add("generated_derivation")
+                round_added += 1
+        if round_added == 0:
+            break
+        added += round_added
+    return added
+
+
 def merge_definitions(
     current: dict[str, list[dict[str, str]]],
     wordnet: dict[str, list[dict[str, str]]],
+    webster: dict[str, list[dict[str, str]]],
     inflections: dict[str, list[Inflection]],
     manual: dict[str, list[dict[str, str]]],
     legacy_rescued: set[str],
+    candidate_words: set[str],
+    word_filter,
 ) -> tuple[dict[str, list[dict[str, str]]], dict[str, set[str]]]:
     base_definitions: dict[str, list[dict[str, str]]] = collections.defaultdict(list)
     sources: dict[str, set[str]] = collections.defaultdict(set)
@@ -641,20 +883,33 @@ def merge_definitions(
             if add_definition(base_definitions, word, entry["part_of_speech"], entry["definition"]):
                 sources[word].add("wordnet")
 
+    for word, entries in webster.items():
+        if word in base_definitions:
+            continue
+        for entry in entries:
+            if add_definition(base_definitions, word, entry["part_of_speech"], entry["definition"]):
+                sources[word].add("webster_1913")
+
     for word, entries in manual.items():
         for entry in entries:
             if add_definition(base_definitions, word, entry["part_of_speech"], entry["definition"]):
                 sources[word].add("manual_definition")
 
+    add_generated_derivations(
+        base_definitions,
+        sources,
+        {word for word in candidate_words if word_filter(word)},
+    )
+
     final: dict[str, list[dict[str, str]]] = collections.defaultdict(list)
     for word, entries in base_definitions.items():
-        if not is_playable(word):
+        if not word_filter(word):
             continue
         for entry in select_definitions(entries):
             add_definition(final, word, entry["part_of_speech"], entry["definition"])
 
     for surface, candidates in inflections.items():
-        if not is_playable(surface):
+        if not word_filter(surface):
             continue
         seen = set()
         for candidate in candidates:
@@ -691,9 +946,11 @@ def source_combos(final: dict[str, list[dict[str, str]]], sources: dict[str, set
 
 def build_audit(
     final: dict[str, list[dict[str, str]]],
+    wordhunt_supplement: dict[str, list[dict[str, str]]],
     current_playable: set[str],
     legacy_rescued: set[str],
     sources: dict[str, set[str]],
+    wordhunt_sources: dict[str, set[str]],
     esdb_words: set[str],
     esdb_default_words: set[str] | None,
     safe_words: set[str],
@@ -749,7 +1006,16 @@ def build_audit(
             "wordnet_safe_playable_words_with_definitions": sum(
                 1 for word in wordnet_definitions if is_playable(word)
             ),
+            "wordhunt_supplement_words": len(wordhunt_supplement),
+            "wordhunt_supplement_definition_entries": sum(
+                len(entries) for entries in wordhunt_supplement.values()
+            ),
+            "wordhunt_total_words": len(final) + len(wordhunt_supplement),
             "source_combinations": source_combos(final, sources),
+            "wordhunt_supplement_source_combinations": source_combos(
+                wordhunt_supplement,
+                wordhunt_sources,
+            ),
             "scowl_stats": scowl_stats,
         },
         "city_changes": city_changes,
@@ -808,6 +1074,9 @@ def write_markdown_report(path: Path, audit: dict) -> None:
             f"| Safe ESDB playable words after category filtering | {summary['safe_esdb_playable_words']} |",
             f"| WordNet safe words with definitions | {summary['wordnet_safe_words_with_definitions']} |",
             f"| WordNet safe playable words with definitions | {summary['wordnet_safe_playable_words_with_definitions']} |",
+            f"| Word Hunt supplement words | {summary['wordhunt_supplement_words']} |",
+            f"| Word Hunt supplement definition entries | {summary['wordhunt_supplement_definition_entries']} |",
+            f"| Word Hunt total words with Textropolis | {summary['wordhunt_total_words']} |",
             "",
             "## Source Mix",
             "",
@@ -816,6 +1085,18 @@ def write_markdown_report(path: Path, audit: dict) -> None:
         ]
     )
     for combo, count in summary["source_combinations"].items():
+        lines.append(f"| `{combo}` | {count} |")
+
+    lines.extend(
+        [
+            "",
+            "## Word Hunt Supplement Source Mix",
+            "",
+            "| Sources | Words |",
+            "| --- | ---: |",
+        ]
+    )
+    for combo, count in summary["wordhunt_supplement_source_combinations"].items():
         lines.append(f"| `{combo}` | {count} |")
 
     lines.extend(
@@ -852,11 +1133,18 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--current-json", type=Path, default=Path("textropolis-dictionary.json"))
     parser.add_argument("--wordnet-zip", type=Path, required=True)
+    parser.add_argument("--webster-json", type=Path)
     parser.add_argument("--esdb-large-wordlist", type=Path, required=True)
     parser.add_argument("--esdb-default-wordlist", type=Path)
     parser.add_argument("--scowl", type=Path, required=True)
     parser.add_argument("--output-json", type=Path, default=Path("textropolis-dictionary.json"))
     parser.add_argument("--output-gzip", type=Path, default=Path("textropolis-dictionary.json.gz"))
+    parser.add_argument("--wordhunt-output-json", type=Path, default=Path("wordhunt-dictionary.json"))
+    parser.add_argument("--wordhunt-output-gzip", type=Path, default=Path("wordhunt-dictionary.json.gz"))
+    parser.add_argument("--wordlist-output-json", type=Path, default=Path("wordlist.json"))
+    parser.add_argument("--wordlist-output-gzip", type=Path, default=Path("wordlist.json.gz"))
+    parser.add_argument("--dictionary-output-json", type=Path, default=Path("dictionary.json"))
+    parser.add_argument("--dictionary-output-gzip", type=Path, default=Path("dictionary.json.gz"))
     parser.add_argument("--audit-json", type=Path, default=Path("textropolis-dictionary-audit.json"))
     parser.add_argument("--audit-md", type=Path, default=Path("textropolis-dictionary-audit.md"))
     return parser.parse_args()
@@ -866,7 +1154,10 @@ def main() -> None:
     args = parse_args()
     esdb_words = lowercase_words(args.esdb_large_wordlist)
     esdb_default_words = lowercase_words(args.esdb_default_wordlist) if args.esdb_default_wordlist else None
-    safe_words, inflections, legacy_source_words, scowl_stats = parse_scowl(args.scowl, esdb_words)
+    safe_words, inflections, legacy_source_words, function_words, scowl_stats = parse_scowl(
+        args.scowl,
+        esdb_words,
+    )
     safe_words.update(MANUAL_INCLUDE_WORDS)
     current_definitions, current_playable, legacy_rescued = load_current_definitions(
         args.current_json,
@@ -874,19 +1165,42 @@ def main() -> None:
         legacy_source_words,
     )
     wordnet_definitions = load_wordnet_definitions(args.wordnet_zip, safe_words)
+    webster_definitions = load_webster_definitions(args.webster_json, safe_words)
     manual_definitions = load_manual_definitions()
+    for word, entries in load_function_word_definitions(function_words).items():
+        manual_definitions[word].extend(entries)
     final, sources = merge_definitions(
         current_definitions,
         wordnet_definitions,
+        webster_definitions,
         inflections,
         manual_definitions,
         legacy_rescued,
+        safe_words,
+        is_playable,
     )
+    wordhunt_full, wordhunt_sources = merge_definitions(
+        current_definitions,
+        wordnet_definitions,
+        webster_definitions,
+        inflections,
+        manual_definitions,
+        legacy_rescued,
+        safe_words,
+        is_wordhunt_word,
+    )
+    wordhunt_supplement = {
+        word: entries
+        for word, entries in wordhunt_full.items()
+        if word not in final
+    }
     audit = build_audit(
         final,
+        wordhunt_supplement,
         current_playable,
         legacy_rescued,
         sources,
+        wordhunt_sources,
         esdb_words,
         esdb_default_words,
         safe_words,
@@ -895,8 +1209,28 @@ def main() -> None:
     )
 
     payload = (json.dumps(final, indent=2, sort_keys=True) + "\n").encode()
+    wordhunt_payload = (json.dumps(wordhunt_supplement, indent=2, sort_keys=True) + "\n").encode()
+    combined_dictionary = {**final, **wordhunt_supplement}
+    dictionary_payload = (json.dumps(combined_dictionary, indent=2, sort_keys=True) + "\n").encode()
+    wordlist_payload = (
+        json.dumps(
+            {
+                "textropolis": sorted(final),
+                "wordhunt": sorted(combined_dictionary),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode()
     args.output_json.write_bytes(payload)
     write_gzip(args.output_gzip, payload)
+    args.wordhunt_output_json.write_bytes(wordhunt_payload)
+    write_gzip(args.wordhunt_output_gzip, wordhunt_payload)
+    args.wordlist_output_json.write_bytes(wordlist_payload)
+    write_gzip(args.wordlist_output_gzip, wordlist_payload)
+    args.dictionary_output_json.write_bytes(dictionary_payload)
+    write_gzip(args.dictionary_output_gzip, dictionary_payload)
     args.audit_json.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n")
     write_markdown_report(args.audit_md, audit)
 
@@ -904,6 +1238,16 @@ def main() -> None:
     print(
         f"wrote {args.output_json} and {args.output_gzip}: "
         f"{summary['new_playable_words']} words, {summary['definition_entries']} definitions"
+    )
+    print(
+        f"wrote {args.wordhunt_output_json} and {args.wordhunt_output_gzip}: "
+        f"{summary['wordhunt_supplement_words']} supplemental words, "
+        f"{summary['wordhunt_supplement_definition_entries']} definitions"
+    )
+    print(
+        f"wrote {args.wordlist_output_json}, {args.wordlist_output_gzip}, "
+        f"{args.dictionary_output_json}, and {args.dictionary_output_gzip}: "
+        f"{summary['wordhunt_total_words']} total words"
     )
     print(f"added {summary['added_words']} words, removed {summary['removed_words']} words")
 

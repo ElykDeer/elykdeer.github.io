@@ -808,6 +808,9 @@ a {
 
 .textropolis-keyboard {
   margin-top: auto;
+  margin-right: -0.65rem;
+  margin-bottom: -0.65rem;
+  margin-left: -0.65rem;
   flex: 0 0 auto;
   border: 1px solid rgba(180, 210, 185, 0.2);
   background: rgba(0, 0, 0, 0.28);
@@ -1007,6 +1010,18 @@ a {
   resize: none;
   overflow: hidden;
   white-space: pre;
+}
+
+.terminal-history-sentinel {
+  position: fixed;
+  left: -100vw;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .terminal-input:focus {
@@ -1215,6 +1230,12 @@ a {
     gap: clamp(0.32rem, 1.2svh, 0.6rem);
     overflow-x: hidden;
     overflow-y: auto;
+  }
+
+  .textropolis-keyboard {
+    margin-right: -0.35rem;
+    margin-bottom: -0.35rem;
+    margin-left: -0.35rem;
   }
 
   .textropolis-word-ticker {

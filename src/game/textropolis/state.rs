@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -381,6 +381,15 @@ impl TextropolisState {
                 .is_some_and(|words| words.contains(&word))
     }
 
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(super) fn load_definitions(&mut self, definitions: HashMap<String, Vec<Definition>>) {
+        Arc::make_mut(&mut self.data).load_definitions(definitions);
+    }
+
+    pub(super) fn definitions_loaded(&self) -> bool {
+        self.data.definitions_loaded()
+    }
+
     fn active_city_words(&self) -> Vec<String> {
         let Some(city_index) = self.current_city_index() else {
             return Vec::new();
@@ -388,8 +397,8 @@ impl TextropolisState {
         let city = &self.data.city(city_index).sanitized;
         let mut words = self
             .data
-            .definitions
-            .keys()
+            .words
+            .iter()
             .filter(|word| word.len() > 3 && is_subanagram(city, word))
             .cloned()
             .collect::<Vec<_>>();
@@ -533,9 +542,10 @@ impl TextropolisState {
             return GuessResult::NotFromCity;
         }
         let word = letters.to_ascii_lowercase();
-        let Some(definitions) = self.data.definitions_for(&word) else {
+        if !self.data.is_word(&word) {
             return GuessResult::Unknown;
-        };
+        }
+        let definitions = self.data.definitions_for(&word).unwrap_or_default();
         if self
             .guessed
             .get(self.active_city_name())
