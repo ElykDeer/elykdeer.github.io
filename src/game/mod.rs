@@ -1,5 +1,6 @@
 pub mod core;
 pub mod textropolis;
+pub mod wordhunt;
 
 #[cfg(target_arch = "wasm32")]
 mod canvas;
@@ -8,6 +9,11 @@ mod canvas;
 pub use canvas::{clear_high_score, BubblesGame};
 
 pub use textropolis::TextropolisGame;
+pub use wordhunt::WordHuntGame;
+
+pub fn clear_wordhunt_progress() {
+    wordhunt::clear_progress();
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn clear_high_score() {}

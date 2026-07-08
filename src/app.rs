@@ -9,7 +9,7 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::{FocusEvent, KeyboardEvent, MouseEvent};
 
 use crate::commands;
-use crate::game::{BubblesGame, TextropolisGame};
+use crate::game::{BubblesGame, TextropolisGame, WordHuntGame};
 use crate::nano_editor::NanoEditorPanel;
 use crate::save_manager::SaveManagerPanel;
 use crate::storage::{load_profile, save_profile};
@@ -1517,6 +1517,16 @@ fn OutputBlockView(
         }
         OutputBlock::LaunchGame { game_id, .. } if game_id == "textropolis" => {
             view! { <TextropolisGame /> }.into_any()
+        }
+        OutputBlock::LaunchGame { game_id, hard }
+            if game_id == "wordhunt" || game_id.starts_with("wordhunt:") =>
+        {
+            let board = game_id.strip_prefix("wordhunt:").map(str::to_string);
+            if let Some(board) = board {
+                view! { <WordHuntGame reveal=hard board=board /> }.into_any()
+            } else {
+                view! { <WordHuntGame reveal=hard /> }.into_any()
+            }
         }
         OutputBlock::LaunchGame { game_id, .. } => view! {
             <section class="terminal-game-placeholder">

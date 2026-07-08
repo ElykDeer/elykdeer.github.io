@@ -24,6 +24,7 @@ pub mod tail;
 pub mod textropolis;
 pub mod toggle;
 pub mod wc;
+pub mod wordhunt;
 
 pub type CommandResult = Result<Vec<OutputBlock>, CommandError>;
 
@@ -99,6 +100,7 @@ pub fn registry() -> Vec<Box<dyn Command>> {
         Box::new(toggle::ToggleCommand),
         Box::new(bubbles::BubblesCommand),
         Box::new(textropolis::TextropolisCommand),
+        Box::new(wordhunt::WordHuntCommand),
     ]
 }
 
@@ -204,7 +206,7 @@ mod tests {
     fn every_registered_command_has_metadata() {
         let commands = registry();
 
-        assert_eq!(commands.len(), 26);
+        assert_eq!(commands.len(), 27);
         for command in commands {
             assert!(!command.name().trim().is_empty());
             assert!(!command.summary().trim().is_empty(), "{}", command.name());
@@ -513,6 +515,69 @@ mod tests {
                 game_id: "textropolis".to_string(),
                 hard: false,
             }]
+        );
+    }
+
+    #[test]
+    fn wordhunt_launches_game() {
+        let mut ctx = TerminalContext::new();
+
+        assert_eq!(
+            run_line(&mut ctx, "wordhunt"),
+            vec![OutputBlock::LaunchGame {
+                game_id: "wordhunt".to_string(),
+                hard: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn wordhunt_reveal_launches_revealed_game() {
+        let mut ctx = TerminalContext::new();
+
+        assert_eq!(
+            run_line(&mut ctx, "wordhunt reveal"),
+            vec![OutputBlock::LaunchGame {
+                game_id: "wordhunt".to_string(),
+                hard: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn wordhunt_accepts_board_size_and_reveal() {
+        let mut ctx = TerminalContext::new();
+
+        assert_eq!(
+            run_line(&mut ctx, "wordhunt 21x20 reveal"),
+            vec![OutputBlock::LaunchGame {
+                game_id: "wordhunt:21x20".to_string(),
+                hard: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn wordhunt_accepts_max_size() {
+        let mut ctx = TerminalContext::new();
+
+        assert_eq!(
+            run_line(&mut ctx, "wordhunt max"),
+            vec![OutputBlock::LaunchGame {
+                game_id: "wordhunt:max".to_string(),
+                hard: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn wordhunt_rejects_too_small_board_size() {
+        let mut ctx = TerminalContext::new();
+        let output = run_line(&mut ctx, "wordhunt 4x5");
+
+        assert!(
+            matches!(output.as_slice(), [OutputBlock::Error(message)] if message.starts_with("Usage:")),
+            "{output:?}"
         );
     }
 
