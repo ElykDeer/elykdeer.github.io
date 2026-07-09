@@ -201,6 +201,7 @@ pub(crate) fn usage_error(message: impl Into<String>) -> CommandResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal::{GameLaunch, WordHuntLaunchBoard};
 
     #[test]
     fn every_registered_command_has_metadata() {
@@ -498,10 +499,7 @@ mod tests {
 
         assert_eq!(
             run_line(&mut ctx, "bubbles hard"),
-            vec![OutputBlock::LaunchGame {
-                game_id: "bubbles".to_string(),
-                hard: true,
-            }]
+            vec![OutputBlock::LaunchGame(GameLaunch::Bubbles { hard: true })]
         );
     }
 
@@ -511,10 +509,7 @@ mod tests {
 
         assert_eq!(
             run_line(&mut ctx, "textropolis"),
-            vec![OutputBlock::LaunchGame {
-                game_id: "textropolis".to_string(),
-                hard: false,
-            }]
+            vec![OutputBlock::LaunchGame(GameLaunch::Textropolis)]
         );
     }
 
@@ -524,10 +519,10 @@ mod tests {
 
         assert_eq!(
             run_line(&mut ctx, "wordhunt"),
-            vec![OutputBlock::LaunchGame {
-                game_id: "wordhunt".to_string(),
-                hard: false,
-            }]
+            vec![OutputBlock::LaunchGame(GameLaunch::WordHunt {
+                reveal: false,
+                board: None,
+            })]
         );
     }
 
@@ -537,10 +532,10 @@ mod tests {
 
         assert_eq!(
             run_line(&mut ctx, "wordhunt reveal"),
-            vec![OutputBlock::LaunchGame {
-                game_id: "wordhunt".to_string(),
-                hard: true,
-            }]
+            vec![OutputBlock::LaunchGame(GameLaunch::WordHunt {
+                reveal: true,
+                board: None,
+            })]
         );
     }
 
@@ -550,10 +545,10 @@ mod tests {
 
         assert_eq!(
             run_line(&mut ctx, "wordhunt 21x20 reveal"),
-            vec![OutputBlock::LaunchGame {
-                game_id: "wordhunt:21x20".to_string(),
-                hard: true,
-            }]
+            vec![OutputBlock::LaunchGame(GameLaunch::WordHunt {
+                reveal: true,
+                board: Some(WordHuntLaunchBoard::Shape { cols: 21, rows: 20 }),
+            })]
         );
     }
 
@@ -563,10 +558,10 @@ mod tests {
 
         assert_eq!(
             run_line(&mut ctx, "wordhunt max"),
-            vec![OutputBlock::LaunchGame {
-                game_id: "wordhunt:max".to_string(),
-                hard: false,
-            }]
+            vec![OutputBlock::LaunchGame(GameLaunch::WordHunt {
+                reveal: false,
+                board: Some(WordHuntLaunchBoard::Max),
+            })]
         );
     }
 

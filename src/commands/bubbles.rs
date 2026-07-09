@@ -1,5 +1,5 @@
 use crate::commands::{usage_error, Command, CommandResult};
-use crate::terminal::{OutputBlock, TerminalContext};
+use crate::terminal::{GameLaunch, OutputBlock, TerminalContext};
 
 pub struct BubblesCommand;
 
@@ -19,14 +19,12 @@ shoot with click, tap, Space, or Enter. `bubbles hard` starts hard mode. `bubble
 
     fn run(&self, _ctx: &mut TerminalContext, args: &[String]) -> CommandResult {
         match args {
-            [] => Ok(vec![OutputBlock::LaunchGame {
-                game_id: "bubbles".to_string(),
+            [] => Ok(vec![OutputBlock::LaunchGame(GameLaunch::Bubbles {
                 hard: false,
-            }]),
-            [arg] if arg == "hard" => Ok(vec![OutputBlock::LaunchGame {
-                game_id: "bubbles".to_string(),
+            })]),
+            [arg] if arg == "hard" => Ok(vec![OutputBlock::LaunchGame(GameLaunch::Bubbles {
                 hard: true,
-            }]),
+            })]),
             [arg] if arg == "clear" => {
                 crate::game::clear_high_score();
                 Ok(vec![OutputBlock::Text(

@@ -22,6 +22,7 @@ use super::data::WordHuntData;
 use super::state::RevealResult;
 use super::state::{BoardShape, Coord, GuessResult, WordHuntState};
 use super::storage::save_progress;
+use crate::terminal::WordHuntLaunchBoard;
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 #[derive(Clone, Debug)]
@@ -65,6 +66,7 @@ enum BoardRequest {
 }
 
 const ALPHABET: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+#[cfg(target_arch = "wasm32")]
 const MIN_BOARD_SIDE: usize = 5;
 #[cfg(target_arch = "wasm32")]
 const MIN_MOBILE_CELL_PX: f64 = 18.0;
@@ -344,17 +346,13 @@ fn viewport_board_shape(requested: Option<BoardRequest>) -> Result<BoardShape, S
     })
 }
 
-fn parse_board_request(raw: &str) -> Option<BoardRequest> {
-    if raw.eq_ignore_ascii_case("max") {
-        return Some(BoardRequest::Max);
+fn launch_board_request(board: WordHuntLaunchBoard) -> BoardRequest {
+    match board {
+        WordHuntLaunchBoard::Max => BoardRequest::Max,
+        WordHuntLaunchBoard::Shape { cols, rows } => {
+            BoardRequest::Shape(BoardShape::new(rows, cols))
+        }
     }
-    let (cols, rows) = raw.split_once('x').or_else(|| raw.split_once('X'))?;
-    let cols = cols.parse::<usize>().ok()?;
-    let rows = rows.parse::<usize>().ok()?;
-    if cols < MIN_BOARD_SIDE || rows < MIN_BOARD_SIDE {
-        return None;
-    }
-    Some(BoardRequest::Shape(BoardShape::new(rows, cols)))
 }
 
 fn stage_style(rows: usize, cols: usize) -> String {
@@ -507,12 +505,10 @@ fn definition_lines(definitions: &[Definition]) -> Vec<String> {
 #[component]
 pub fn WordHuntGame(
     #[prop(default = false)] reveal: bool,
-    #[prop(optional)] board: Option<String>,
+    #[prop(optional)] board: Option<WordHuntLaunchBoard>,
 ) -> impl IntoView {
-    let requested_board = board.as_deref().and_then(parse_board_request);
-    let fixed_size = board
-        .as_deref()
-        .is_some_and(|raw| !raw.eq_ignore_ascii_case("max"));
+    let requested_board = board.map(launch_board_request);
+    let fixed_size = matches!(board, Some(WordHuntLaunchBoard::Shape { .. }));
     let section_ref = NodeRef::<Section>::new();
     let load = RwSignal::new(DictionaryLoad::Loading);
     let feedback = RwSignal::new(String::new());

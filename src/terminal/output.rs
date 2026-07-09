@@ -17,10 +17,57 @@ pub enum OutputBlock {
         path: String,
         content: String,
     },
-    LaunchGame {
-        game_id: String,
+    LaunchGame(GameLaunch),
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub enum GameLaunch {
+    Bubbles {
         hard: bool,
     },
+    Textropolis,
+    WordHunt {
+        reveal: bool,
+        board: Option<WordHuntLaunchBoard>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub enum WordHuntLaunchBoard {
+    Max,
+    Shape { cols: usize, rows: usize },
+}
+
+impl GameLaunch {
+    pub fn id(&self) -> &'static str {
+        match self {
+            Self::Bubbles { .. } => "bubbles",
+            Self::Textropolis => "textropolis",
+            Self::WordHunt { .. } => "wordhunt",
+        }
+    }
+
+    pub fn launch_label(&self) -> String {
+        match self {
+            Self::WordHunt {
+                board: Some(board), ..
+            } => format!("wordhunt:{}", board.label()),
+            _ => self.id().to_string(),
+        }
+    }
+
+    pub fn close_message(&self) -> String {
+        format!("[{} closed]", self.launch_label())
+    }
+}
+
+impl WordHuntLaunchBoard {
+    pub fn label(self) -> String {
+        match self {
+            Self::Max => "max".to_string(),
+            Self::Shape { cols, rows } => format!("{cols}x{rows}"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

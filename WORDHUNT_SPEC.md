@@ -122,7 +122,7 @@ This is not a Boggle-style anagram game. There are no timers, daily boards, name
 - Add `src/commands/wordhunt.rs`.
 - Register the command in `src/commands/mod.rs`.
 - Export `WordHuntGame` from `src/game/mod.rs`.
-- Render `game_id == "wordhunt"` in `src/app.rs`.
+- Launch via `GameLaunch::WordHunt` and render through `GameLaunchView`.
 - Load the existing gzipped Textropolis dictionary plus the gzipped Word Hunt supplement.
 - Add the Word Hunt localStorage key to site backup/export.
 - Treat the dictionary as both a seed-word pool and a validator for every straight-line 4+ word that appears in the final grid.

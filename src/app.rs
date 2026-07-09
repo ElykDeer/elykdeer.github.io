@@ -9,7 +9,7 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::{FocusEvent, KeyboardEvent, MouseEvent};
 
 use crate::commands;
-use crate::game::{BubblesGame, TextropolisGame, WordHuntGame};
+use crate::game::GameLaunchView;
 use crate::nano_editor::NanoEditorPanel;
 use crate::save_manager::SaveManagerPanel;
 use crate::storage::{load_profile, save_profile};
@@ -825,7 +825,7 @@ fn blur_command_input(command_input_ref: NodeRef<Textarea>) {
 fn output_launches_game(output: &[OutputBlock]) -> bool {
     output.iter().any(|block| match block {
         OutputBlock::Panel { body, .. } => output_launches_game(body),
-        OutputBlock::LaunchGame { .. } => true,
+        OutputBlock::LaunchGame(_) => true,
         _ => false,
     })
 }
@@ -841,8 +841,9 @@ fn close_open_games(transcript: RwSignal<Vec<TerminalEntry>>) {
 fn close_game_blocks(blocks: &mut [OutputBlock]) {
     for block in blocks {
         match block {
-            OutputBlock::LaunchGame { game_id, .. } => {
-                *block = OutputBlock::Text(format!("[{game_id} closed]"));
+            OutputBlock::LaunchGame(launch) => {
+                let message = launch.close_message();
+                *block = OutputBlock::Text(message);
             }
             OutputBlock::Panel { body, .. } => close_game_blocks(body),
             _ => {}
@@ -1512,29 +1513,7 @@ fn OutputBlockView(
             }
             .into_any()
         }
-        OutputBlock::LaunchGame { game_id, hard } if game_id == "bubbles" => {
-            view! { <BubblesGame hard=hard /> }.into_any()
-        }
-        OutputBlock::LaunchGame { game_id, .. } if game_id == "textropolis" => {
-            view! { <TextropolisGame /> }.into_any()
-        }
-        OutputBlock::LaunchGame { game_id, hard }
-            if game_id == "wordhunt" || game_id.starts_with("wordhunt:") =>
-        {
-            let board = game_id.strip_prefix("wordhunt:").map(str::to_string);
-            if let Some(board) = board {
-                view! { <WordHuntGame reveal=hard board=board /> }.into_any()
-            } else {
-                view! { <WordHuntGame reveal=hard /> }.into_any()
-            }
-        }
-        OutputBlock::LaunchGame { game_id, .. } => view! {
-            <section class="terminal-game-placeholder">
-                <h2>{game_id.clone()}</h2>
-                <p>{format!("No renderer is registered for game_id '{}'.", game_id)}</p>
-            </section>
-        }
-        .into_any(),
+        OutputBlock::LaunchGame(launch) => view! { <GameLaunchView launch=launch /> }.into_any(),
     }
 }
 
@@ -1582,6 +1561,7 @@ fn render_ansi_fragment(fragment: AnsiFragment) -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal::{GameLaunch, WordHuntLaunchBoard};
 
     #[test]
     fn home_prompt_omits_path() {
@@ -1688,17 +1668,15 @@ mod tests {
     fn close_game_blocks_replaces_nested_launches() {
         let mut blocks = vec![
             OutputBlock::Text("keep".to_string()),
-            OutputBlock::LaunchGame {
-                game_id: "bubbles".to_string(),
-                hard: true,
-            },
+            OutputBlock::LaunchGame(GameLaunch::Bubbles { hard: true }),
             OutputBlock::Panel {
                 title: "panel".to_string(),
-                body: vec![OutputBlock::LaunchGame {
-                    game_id: "textropolis".to_string(),
-                    hard: false,
-                }],
+                body: vec![OutputBlock::LaunchGame(GameLaunch::Textropolis)],
             },
+            OutputBlock::LaunchGame(GameLaunch::WordHunt {
+                reveal: false,
+                board: Some(WordHuntLaunchBoard::Shape { cols: 21, rows: 20 }),
+            }),
         ];
 
         close_game_blocks(&mut blocks);
@@ -1712,16 +1690,16 @@ mod tests {
                     title: "panel".to_string(),
                     body: vec![OutputBlock::Text("[textropolis closed]".to_string())],
                 },
+                OutputBlock::Text("[wordhunt:21x20 closed]".to_string()),
             ]
         );
     }
 
     #[test]
     fn keyed_output_blocks_changes_key_when_block_changes() {
-        let old_key = keyed_output_blocks(vec![OutputBlock::LaunchGame {
-            game_id: "bubbles".to_string(),
+        let old_key = keyed_output_blocks(vec![OutputBlock::LaunchGame(GameLaunch::Bubbles {
             hard: false,
-        }])
+        })])
         .remove(0)
         .0;
         let new_key = keyed_output_blocks(vec![OutputBlock::Text("[bubbles closed]".to_string())])

@@ -8,12 +8,75 @@
       content="Kyle Martin's personal website and in-browser terminal."
     />
     <title>Kyle Martin</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        background: #1e1e1e;
+        color: #f3f1ea;
+      }
+
+      html,
+      body {
+        min-height: 100%;
+        margin: 0;
+      }
+
+      body {
+        background: #1e1e1e;
+      }
+
+      .boot-profile-overlay {
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        z-index: 0;
+        width: 340px;
+        max-width: calc(100vw - 2rem);
+        max-height: calc(100vh - 2rem);
+        overflow: auto;
+        padding: 2.6rem 1.7rem 2.45rem;
+        border-top: 0.55rem double #7f3dff;
+        border-bottom: 0.55rem double #7f3dff;
+        color: #a9a9a9;
+        font-family: Georgia, "Times New Roman", Times, serif;
+        text-align: center;
+        transform: translate(-50%, -50%);
+      }
+
+      .boot-profile-overlay h1 {
+        margin: 0;
+        color: inherit;
+        font-size: 2.15rem;
+        font-weight: 400;
+        line-height: 1.1;
+        letter-spacing: 0;
+      }
+
+      .boot-profile-overlay p {
+        margin: 1.25rem 0 0;
+        color: inherit;
+        font-size: 2rem;
+        line-height: 1.2;
+      }
+    </style>
     <link rel="icon" href="/favicon.ico" />
     <link data-trunk rel="copy-file" href="favicon.ico" />
+    <link data-trunk rel="copy-file" href="word-assets.json" />
     <link data-trunk rel="copy-file" href="wordlist.json.gz" />
     <link data-trunk rel="copy-file" href="dictionary.json.gz" />
     <link data-trunk rel="css" href="src/styles.css" />
     <link data-trunk rel="rust" href="Cargo.toml" />
+  </head>
+  <body>
+    <noscript>This site needs WebAssembly and JavaScript enabled.</noscript>
+    <section
+      id="boot-profile-overlay"
+      class="boot-profile-overlay"
+      aria-labelledby="boot-profile-name"
+    >
+      <h1 id="boot-profile-name">Kyle Martin</h1>
+      <p>Computer Engineer</p>
+    </section>
     <script>
       // Profile storage in IndexedDB (localStorage's ~5MB cap is too small once
       // packages are installed). A single key-value store; first read migrates
@@ -105,7 +168,12 @@
         return file ? file.text() : Promise.resolve(null);
       };
 
-      const ELYK_ASSET_CACHE_VERSION = "word-assets-2026-07-08-scoped";
+      const ELYK_DEFAULT_WORD_ASSETS = {
+        version: "word-assets-2026-07-08-scoped",
+        wordlist: "/wordlist.json.gz",
+        dictionary: "/dictionary.json.gz",
+      };
+      let _wordAssetManifest = null;
       let _wordList = null;
       let _fullDictionary = null;
       let _dictionaryStatus = {
@@ -114,6 +182,23 @@
         total: 0,
         percent: null,
       };
+
+      async function _elykWordAssets() {
+        if (!_wordAssetManifest) {
+          _wordAssetManifest = fetch("/word-assets.json", { cache: "no-cache" })
+            .then((response) => response.ok ? response.json() : ELYK_DEFAULT_WORD_ASSETS)
+            .then((manifest) => ({
+              version: typeof manifest.version === "string" ? manifest.version : ELYK_DEFAULT_WORD_ASSETS.version,
+              wordlist: typeof manifest.wordlist === "string" ? manifest.wordlist : ELYK_DEFAULT_WORD_ASSETS.wordlist,
+              dictionary: typeof manifest.dictionary === "string" ? manifest.dictionary : ELYK_DEFAULT_WORD_ASSETS.dictionary,
+            }))
+            .catch((err) => {
+              console.warn("[assets] could not load word asset manifest:", err);
+              return ELYK_DEFAULT_WORD_ASSETS;
+            });
+        }
+        return _wordAssetManifest;
+      }
 
       async function _elykLoadGzipText(url, label, status) {
         const response = await fetch(url);
@@ -158,8 +243,10 @@
         return text;
       }
 
-      async function _elykLoadCachedGzipText(url, label, status) {
-        const cacheKey = `elyk.asset.${ELYK_ASSET_CACHE_VERSION}.${url}`;
+      async function _elykLoadCachedGzipText(assetName, label, status) {
+        const assets = await _elykWordAssets();
+        const url = assets[assetName];
+        const cacheKey = `elyk.asset.${assets.version}.${url}`;
         const cached = await window.elykStorageGet(cacheKey).catch(() => null);
         if (cached !== null) {
           if (status) {
@@ -179,7 +266,7 @@
 
       window.elykLoadWordList = function () {
         if (!_wordList) {
-          _wordList = _elykLoadCachedGzipText("/wordlist.json.gz", "word list");
+          _wordList = _elykLoadCachedGzipText("wordlist", "word list");
         }
         return _wordList;
       };
@@ -187,7 +274,7 @@
       window.elykLoadFullDictionary = function () {
         if (!_fullDictionary) {
           _fullDictionary = _elykLoadCachedGzipText(
-            "/dictionary.json.gz",
+            "dictionary",
             "dictionary",
             _dictionaryStatus
           ).catch((err) => {
@@ -210,19 +297,6 @@
 
       window.elykLoadTextropolisDictionary = window.elykLoadFullDictionary;
       window.elykLoadWordHuntDictionary = window.elykLoadFullDictionary;
-
-      window.addEventListener("load", () => {
-        const preload = () => window.elykLoadWordList().catch((err) => {
-          console.warn("[words] word list preload failed:", err);
-        });
-        window.setTimeout(() => {
-          if ("requestIdleCallback" in window) {
-            window.requestIdleCallback(preload, { timeout: 6000 });
-          } else {
-            window.setTimeout(preload, 0);
-          }
-        }, 1200);
-      });
 
       (() => {
         let dragging = false;
@@ -355,17 +429,6 @@ io.ElykCapture = _ElykCapture
         }
         return _pyodideLoading;
       };
-
-      window.addEventListener("load", () => {
-        const preload = () => window.elykEnsurePyodide().catch((err) => {
-          console.warn("[py] Pyodide preload failed:", err);
-        });
-        if ("requestIdleCallback" in window) {
-          window.requestIdleCallback(preload, { timeout: 3500 });
-        } else {
-          window.setTimeout(preload, 1500);
-        }
-      });
 
       // The terminal-visible parts of Pyodide's filesystem. Everything else
       // (/lib, /usr, /tmp, …) is CPython/system state.
@@ -718,8 +781,5 @@ json.dumps(result)
         }
       };
     </script>
-  </head>
-  <body>
-    <noscript>This site needs WebAssembly and JavaScript enabled.</noscript>
   </body>
 </html>

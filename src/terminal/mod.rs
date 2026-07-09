@@ -4,7 +4,9 @@ pub mod parser;
 pub mod state;
 
 pub(crate) use completion::{common_prefix, complete_terminal_tab};
-pub use output::{parse_ansi_fragments, AnsiFragment, AnsiStyle, OutputBlock};
+pub use output::{
+    parse_ansi_fragments, AnsiFragment, AnsiStyle, GameLaunch, OutputBlock, WordHuntLaunchBoard,
+};
 pub use parser::{
     parse_command_line, parse_line, parse_pipeline, ParseError, ParsedCommand, ParsedLine,
     ParsedPipeline,

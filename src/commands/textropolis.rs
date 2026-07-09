@@ -1,5 +1,5 @@
 use crate::commands::{usage_error, Command, CommandResult};
-use crate::terminal::{OutputBlock, TerminalContext};
+use crate::terminal::{GameLaunch, OutputBlock, TerminalContext};
 
 pub struct TextropolisCommand;
 
@@ -18,10 +18,7 @@ impl Command for TextropolisCommand {
 
     fn run(&self, _ctx: &mut TerminalContext, args: &[String]) -> CommandResult {
         match args {
-            [] => Ok(vec![OutputBlock::LaunchGame {
-                game_id: "textropolis".to_string(),
-                hard: false,
-            }]),
+            [] => Ok(vec![OutputBlock::LaunchGame(GameLaunch::Textropolis)]),
             _ => usage_error("Usage: textropolis"),
         }
     }

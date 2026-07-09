@@ -2,6 +2,9 @@ pub mod core;
 pub mod textropolis;
 pub mod wordhunt;
 
+use crate::terminal::GameLaunch;
+use leptos::prelude::*;
+
 #[cfg(target_arch = "wasm32")]
 mod canvas;
 
@@ -15,11 +18,24 @@ pub fn clear_wordhunt_progress() {
     wordhunt::clear_progress();
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub fn clear_high_score() {}
+#[component]
+pub fn GameLaunchView(launch: GameLaunch) -> impl IntoView {
+    match launch {
+        GameLaunch::Bubbles { hard } => view! { <BubblesGame hard=hard /> }.into_any(),
+        GameLaunch::Textropolis => view! { <TextropolisGame /> }.into_any(),
+        GameLaunch::WordHunt {
+            reveal,
+            board: Some(board),
+        } => view! { <WordHuntGame reveal=reveal board=board /> }.into_any(),
+        GameLaunch::WordHunt {
+            reveal,
+            board: None,
+        } => view! { <WordHuntGame reveal=reveal /> }.into_any(),
+    }
+}
 
 #[cfg(not(target_arch = "wasm32"))]
-use leptos::prelude::*;
+pub fn clear_high_score() {}
 
 #[cfg(not(target_arch = "wasm32"))]
 #[component]

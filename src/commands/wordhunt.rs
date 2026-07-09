@@ -1,5 +1,5 @@
 use crate::commands::{usage_error, Command, CommandResult};
-use crate::terminal::{OutputBlock, TerminalContext};
+use crate::terminal::{GameLaunch, OutputBlock, TerminalContext, WordHuntLaunchBoard};
 
 pub struct WordHuntCommand;
 
@@ -30,7 +30,7 @@ impl Command for WordHuntCommand {
         }
 
         let mut reveal = false;
-        let mut size = None::<String>;
+        let mut size = None::<WordHuntLaunchBoard>;
         for arg in args {
             if arg == "reveal" {
                 if reveal {
@@ -41,7 +41,7 @@ impl Command for WordHuntCommand {
                 if size.is_some() {
                     return usage_error("Usage: wordhunt [max|CxR] [reveal|clear]");
                 }
-                size = Some("max".to_string());
+                size = Some(WordHuntLaunchBoard::Max);
             } else if let Some(normalized) = parse_board_size(arg) {
                 if size.is_some() {
                     return usage_error("Usage: wordhunt [max|CxR] [reveal|clear]");
@@ -52,22 +52,19 @@ impl Command for WordHuntCommand {
             }
         }
 
-        let game_id = size
-            .map(|size| format!("wordhunt:{size}"))
-            .unwrap_or_else(|| "wordhunt".to_string());
-        Ok(vec![OutputBlock::LaunchGame {
-            game_id,
-            hard: reveal,
-        }])
+        Ok(vec![OutputBlock::LaunchGame(GameLaunch::WordHunt {
+            reveal,
+            board: size,
+        })])
     }
 }
 
-fn parse_board_size(raw: &str) -> Option<String> {
+fn parse_board_size(raw: &str) -> Option<WordHuntLaunchBoard> {
     let (cols, rows) = raw.split_once('x').or_else(|| raw.split_once('X'))?;
     let cols = cols.parse::<usize>().ok()?;
     let rows = rows.parse::<usize>().ok()?;
     if cols < 5 || rows < 5 {
         return None;
     }
-    Some(format!("{cols}x{rows}"))
+    Some(WordHuntLaunchBoard::Shape { cols, rows })
 }
