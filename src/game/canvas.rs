@@ -1088,7 +1088,7 @@ impl CanvasRunner {
         }
 
         let controls = cannon_controls(layout);
-        if distance(x, y, controls.hold_x, controls.hold_y) <= controls.radius * 1.7 {
+        if distance(x, y, controls.hold_x, controls.hold_y) <= hold_hit_radius(controls) {
             self.hold();
         } else {
             self.aim_from_client(client_x, client_y, canvas);
@@ -3064,17 +3064,25 @@ struct CannonControls {
     gap: f64,
 }
 
+const CANNON_SIDE_SLOT_MARGIN: f64 = 30.0;
+const HOLD_HIT_RADIUS_MIN: f64 = 28.0;
+const HOLD_HIT_RADIUS_SCALE: f64 = 2.6;
+
 fn cannon_controls(layout: BubbleLayout) -> CannonControls {
     let radius = layout.radius * 0.62;
     let gap = radius * 2.0 + 6.0;
-    let hold_x = layout.cannon_x - layout.radius * 1.05 - 18.0 - radius;
+    let hold_x = layout.cannon_x - layout.radius * 1.05 - CANNON_SIDE_SLOT_MARGIN - radius;
     CannonControls {
         hold_x,
         hold_y: layout.cannon_y,
-        next_x: layout.cannon_x + layout.radius * 1.05 + 18.0 + radius,
+        next_x: layout.cannon_x + layout.radius * 1.05 + CANNON_SIDE_SLOT_MARGIN + radius,
         radius,
         gap,
     }
+}
+
+fn hold_hit_radius(controls: CannonControls) -> f64 {
+    (controls.radius * HOLD_HIT_RADIUS_SCALE).max(HOLD_HIT_RADIUS_MIN)
 }
 
 fn draw_cannon(
