@@ -26,6 +26,8 @@ pub enum GameLaunch {
         hard: bool,
         cheat: bool,
     },
+    #[cfg(debug_assertions)]
+    Snek,
     Textropolis,
     WordHunt {
         reveal: bool,
@@ -43,6 +45,8 @@ impl GameLaunch {
     pub fn id(&self) -> &'static str {
         match self {
             Self::Bubbles { .. } => "bubbles",
+            #[cfg(debug_assertions)]
+            Self::Snek => "snek",
             Self::Textropolis => "textropolis",
             Self::WordHunt { .. } => "wordhunt",
         }

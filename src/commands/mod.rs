@@ -20,6 +20,8 @@ pub mod python;
 pub mod rm;
 pub mod save;
 pub mod sh;
+#[cfg(debug_assertions)]
+pub mod snek;
 pub mod tail;
 pub mod textropolis;
 pub mod toggle;
@@ -73,7 +75,7 @@ pub trait Command {
 }
 
 pub fn registry() -> Vec<Box<dyn Command>> {
-    vec![
+    with_debug_commands(vec![
         Box::new(help::HelpCommand),
         Box::new(ls::LsCommand),
         Box::new(ls::LlCommand),
@@ -101,7 +103,18 @@ pub fn registry() -> Vec<Box<dyn Command>> {
         Box::new(bubbles::BubblesCommand),
         Box::new(textropolis::TextropolisCommand),
         Box::new(wordhunt::WordHuntCommand),
-    ]
+    ])
+}
+
+#[cfg(debug_assertions)]
+fn with_debug_commands(mut commands: Vec<Box<dyn Command>>) -> Vec<Box<dyn Command>> {
+    commands.push(Box::new(snek::SnekCommand));
+    commands
+}
+
+#[cfg(not(debug_assertions))]
+fn with_debug_commands(commands: Vec<Box<dyn Command>>) -> Vec<Box<dyn Command>> {
+    commands
 }
 
 pub fn command_metadata() -> Vec<CommandMetadata> {
@@ -207,7 +220,8 @@ mod tests {
     fn every_registered_command_has_metadata() {
         let commands = registry();
 
-        assert_eq!(commands.len(), 27);
+        let expected_len = if cfg!(debug_assertions) { 28 } else { 27 };
+        assert_eq!(commands.len(), expected_len);
         for command in commands {
             assert!(!command.name().trim().is_empty());
             assert!(!command.summary().trim().is_empty(), "{}", command.name());
@@ -524,6 +538,28 @@ mod tests {
                 hard: true,
                 cheat: true
             })]
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn snek_launches_game() {
+        let mut ctx = TerminalContext::new();
+
+        assert_eq!(
+            run_line(&mut ctx, "snek"),
+            vec![OutputBlock::LaunchGame(GameLaunch::Snek)]
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn snek_clear_reports_confirmation() {
+        let mut ctx = TerminalContext::new();
+
+        assert_eq!(
+            run_line(&mut ctx, "snek clear"),
+            vec![OutputBlock::Text("Snek save cleared.".to_string())]
         );
     }
 

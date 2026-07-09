@@ -1,4 +1,6 @@
 pub mod core;
+#[cfg(debug_assertions)]
+pub mod snek;
 pub mod textropolis;
 pub mod wordhunt;
 
@@ -11,11 +13,18 @@ mod canvas;
 #[cfg(target_arch = "wasm32")]
 pub use canvas::{clear_high_score, BubblesGame};
 
+#[cfg(debug_assertions)]
+pub use snek::SnekGame;
 pub use textropolis::TextropolisGame;
 pub use wordhunt::WordHuntGame;
 
 pub fn clear_wordhunt_progress() {
     wordhunt::clear_progress();
+}
+
+#[cfg(debug_assertions)]
+pub fn clear_snek_save() {
+    snek::clear_save();
 }
 
 #[component]
@@ -24,6 +33,8 @@ pub fn GameLaunchView(launch: GameLaunch) -> impl IntoView {
         GameLaunch::Bubbles { hard, cheat } => {
             view! { <BubblesGame hard=hard cheat=cheat /> }.into_any()
         }
+        #[cfg(debug_assertions)]
+        GameLaunch::Snek => view! { <SnekGame /> }.into_any(),
         GameLaunch::Textropolis => view! { <TextropolisGame /> }.into_any(),
         GameLaunch::WordHunt {
             reveal,
