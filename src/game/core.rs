@@ -4,6 +4,8 @@ use serde::{de::Error, Deserialize, Deserializer, Serialize};
 
 pub const ROWS: usize = 15;
 pub const COLS: usize = 12;
+pub(crate) const ROW_UPGRADE_LEVELS: u8 = 3;
+const ROWS_PER_ROW_UPGRADE_LEVEL: usize = 1;
 pub const COLORS: [BubbleColor; 6] = [
     BubbleColor::Rose,
     BubbleColor::Gold,
@@ -919,7 +921,7 @@ impl BubbleRun {
         self.trace_sight_level = self.trace_sight_level.min(1);
         self.prize_bubble_level = self.prize_bubble_level.min(3);
         self.color_sense_level = self.color_sense_level.min(3);
-        self.clean_start_level = self.clean_start_level.min(2);
+        self.clean_start_level = self.clean_start_level.min(ROW_UPGRADE_LEVELS);
         self.bomb_cache_level = self.bomb_cache_level.min(2);
         self.wild_cache_level = self.wild_cache_level.min(2);
         self.drop_reserve_level = self.drop_reserve_level.min(3);
@@ -928,7 +930,7 @@ impl BubbleRun {
         self.storm_focus_level = self.storm_focus_level.min(2);
         self.prize_quality_level = self.prize_quality_level.min(3);
         self.bank_sight_level = self.bank_sight_level.min(3);
-        self.extra_rows_level = self.extra_rows_level.min(2);
+        self.extra_rows_level = self.extra_rows_level.min(ROW_UPGRADE_LEVELS);
         self.drop_haste_level = self.drop_haste_level.min(3);
         self.pop_drop_level = self.pop_drop_level.min(1);
         self.lightning_power_level = self.lightning_power_level.min(3);
@@ -1297,9 +1299,11 @@ impl BubbleRun {
     fn add_round_start_charges(&mut self) {}
 
     fn starting_rows(&self, base_rows: usize) -> usize {
-        let reduction = self.active_clean_start_level().min(2) as usize;
+        let reduction = self.active_clean_start_level().min(ROW_UPGRADE_LEVELS) as usize
+            * ROWS_PER_ROW_UPGRADE_LEVEL;
         let addition = if reduction == 0 {
-            self.active_extra_rows_level().min(2) as usize
+            self.active_extra_rows_level().min(ROW_UPGRADE_LEVELS) as usize
+                * ROWS_PER_ROW_UPGRADE_LEVEL
         } else {
             0
         };
@@ -1959,9 +1963,9 @@ impl GameRules {
 
     const fn starting_rows(self) -> usize {
         if self.hard {
-            6
+            12
         } else {
-            5
+            10
         }
     }
 }
@@ -2938,15 +2942,63 @@ mod tests {
     }
 
     #[test]
+    fn new_games_start_with_doubled_opening_rows() {
+        let normal = BubbleGame::new(7, 0);
+        let hard = BubbleGame::hard(7, 0);
+
+        assert_eq!(normal.board.occupied_cells().count(), 10 * COLS);
+        assert_eq!(hard.board.occupied_cells().count(), 12 * COLS);
+    }
+
+    #[test]
     fn clean_start_reduces_later_round_opening_rows() {
         let run = BubbleRun {
-            clean_start_level: 2,
+            clean_start_level: ROW_UPGRADE_LEVELS,
             clean_start_enabled: true,
             ..BubbleRun::default()
         };
         let game = BubbleGame::with_run(7, 0, false, run);
 
-        assert_eq!(game.board.occupied_cells().count(), (5 - 2) * COLS);
+        assert_eq!(game.board.occupied_cells().count(), (10 - 3) * COLS);
+    }
+
+    #[test]
+    fn extra_rows_adds_one_opening_row_per_level() {
+        let run = BubbleRun {
+            extra_rows_level: 1,
+            extra_rows_enabled: true,
+            ..BubbleRun::default()
+        };
+        let game = BubbleGame::with_run(7, 0, false, run);
+
+        assert_eq!(game.board.occupied_cells().count(), (10 + 1) * COLS);
+    }
+
+    #[test]
+    fn extra_rows_has_three_total_levels() {
+        let run = BubbleRun {
+            extra_rows_level: ROW_UPGRADE_LEVELS,
+            extra_rows_enabled: true,
+            ..BubbleRun::default()
+        };
+        let game = BubbleGame::with_run(7, 0, false, run);
+
+        assert_eq!(game.board.occupied_cells().count(), (10 + 3) * COLS);
+    }
+
+    #[test]
+    fn extra_rows_caps_at_playable_ceiling_in_hard_mode() {
+        let run = BubbleRun {
+            extra_rows_level: ROW_UPGRADE_LEVELS,
+            extra_rows_enabled: true,
+            ..BubbleRun::default()
+        };
+        let game = BubbleGame::with_run(7, 0, true, run);
+
+        assert_eq!(
+            game.board.occupied_cells().count(),
+            ROWS.saturating_sub(2) * COLS
+        );
     }
 
     #[test]

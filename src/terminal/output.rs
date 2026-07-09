@@ -24,6 +24,7 @@ pub enum OutputBlock {
 pub enum GameLaunch {
     Bubbles {
         hard: bool,
+        cheat: bool,
     },
     Textropolis,
     WordHunt {

@@ -12,7 +12,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::data::{Definition, WordHuntData};
-    use super::state::{BoardShape, Coord, GuessResult, Puzzle, WordHuntState};
+    use super::state::{BoardShape, Coord, GuessResult, Puzzle, SavedProgress, WordHuntState};
 
     fn test_data() -> Arc<WordHuntData> {
         let mut definitions = HashMap::new();
@@ -69,6 +69,20 @@ mod tests {
         ] {
             definitions.insert(
                 word.to_string(),
+                vec![Definition {
+                    part_of_speech: "noun".to_string(),
+                    definition: format!("{word} definition"),
+                }],
+            );
+        }
+        Arc::new(WordHuntData::from_definitions(definitions))
+    }
+
+    fn data_for_words(words: &[&str]) -> Arc<WordHuntData> {
+        let mut definitions = HashMap::new();
+        for word in words {
+            definitions.insert(
+                (*word).to_string(),
                 vec![Definition {
                     part_of_speech: "noun".to_string(),
                     definition: format!("{word} definition"),
@@ -158,6 +172,27 @@ mod tests {
 
         assert!(words.contains(&"cable"));
         assert!(!words.contains(&"able"));
+    }
+
+    #[test]
+    fn solver_drops_reversed_strict_subset_words_on_the_same_path() {
+        let data = data_for_words(&["abcde", "dcba"]);
+        let rows = vec![
+            "ABCDE".to_string(),
+            "XXXXX".to_string(),
+            "XXXXX".to_string(),
+            "XXXXX".to_string(),
+            "XXXXX".to_string(),
+        ];
+        let puzzle = WordHuntState::puzzle_from_rows(Arc::clone(&data), rows).unwrap();
+        let words = puzzle
+            .words
+            .iter()
+            .map(|word| word.word.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(words.contains(&"abcde"));
+        assert!(!words.contains(&"dcba"));
     }
 
     #[test]
@@ -374,6 +409,20 @@ mod tests {
             ]]
         );
 
+        state.begin_selection(Coord::new(0, 1));
+        state.preview_selection(Coord::new(0, 4));
+        assert!(matches!(
+            state.submit_selection(),
+            GuessResult::AlreadySubword { word, path } if word == "able"
+                && path == vec![
+                    Coord::new(0, 1),
+                    Coord::new(0, 2),
+                    Coord::new(0, 3),
+                    Coord::new(0, 4)
+                ]
+        ));
+        assert_eq!(state.subword_count(), 1);
+
         state.begin_selection(Coord::new(0, 0));
         state.preview_selection(Coord::new(0, 4));
         assert!(matches!(
@@ -384,5 +433,98 @@ mod tests {
         assert_eq!(state.subword_count(), 1);
         assert_eq!(state.subwords(), vec!["able".to_string()]);
         assert!(state.subword_paths().is_empty());
+    }
+
+    #[test]
+    fn reversed_subset_words_mark_as_subwords_without_counting() {
+        let data = data_for_words(&["abcde", "dcba"]);
+        let rows = vec![
+            "ABCDE".to_string(),
+            "XXXXX".to_string(),
+            "XXXXX".to_string(),
+            "XXXXX".to_string(),
+            "XXXXX".to_string(),
+        ];
+        let mut state = WordHuntState::with_puzzle(
+            Arc::clone(&data),
+            WordHuntState::puzzle_from_rows(Arc::clone(&data), rows).unwrap(),
+        );
+
+        assert_eq!(state.total_count(), 1);
+        assert!(!state
+            .puzzle()
+            .words
+            .iter()
+            .any(|entry| entry.word == "dcba"));
+
+        state.begin_selection(Coord::new(0, 3));
+        state.preview_selection(Coord::new(0, 0));
+
+        assert!(matches!(
+            state.submit_selection(),
+            GuessResult::Subword { word, path } if word == "dcba"
+                && path == vec![
+                    Coord::new(0, 3),
+                    Coord::new(0, 2),
+                    Coord::new(0, 1),
+                    Coord::new(0, 0)
+                ]
+        ));
+        assert_eq!(state.found_count(), 0);
+        assert_eq!(state.subwords(), vec!["dcba".to_string()]);
+    }
+
+    #[test]
+    fn embedded_word_that_is_also_an_answer_does_not_become_duplicate_subword() {
+        let data = data_for_words(&["abcde", "dcba"]);
+        let rows = vec![
+            "ABCDE".to_string(),
+            "DCBAX".to_string(),
+            "XXXXX".to_string(),
+            "XXXXX".to_string(),
+            "XXXXX".to_string(),
+        ];
+        let mut state = WordHuntState::with_puzzle(
+            Arc::clone(&data),
+            WordHuntState::puzzle_from_rows(Arc::clone(&data), rows).unwrap(),
+        );
+
+        assert!(state
+            .puzzle()
+            .words
+            .iter()
+            .any(|entry| entry.word == "dcba"));
+
+        state.begin_selection(Coord::new(0, 3));
+        state.preview_selection(Coord::new(0, 0));
+
+        assert!(matches!(
+            state.submit_selection(),
+            GuessResult::NotInPuzzle { word } if word == "dcba"
+        ));
+        assert_eq!(state.subword_count(), 0);
+        assert!(state.subwords().is_empty());
+    }
+
+    #[test]
+    fn saved_progress_does_not_persist_partial_selection() {
+        let data = test_data();
+        let rows = vec![
+            "ABLEX".to_string(),
+            "XXXXX".to_string(),
+            "XXXXX".to_string(),
+            "XXXXX".to_string(),
+            "XXXXX".to_string(),
+        ];
+        let mut state = WordHuntState::with_puzzle(
+            Arc::clone(&data),
+            WordHuntState::puzzle_from_rows(Arc::clone(&data), rows).unwrap(),
+        );
+
+        state.begin_selection(Coord::new(0, 0));
+        state.preview_selection(Coord::new(0, 2));
+
+        let saved = SavedProgress::from(&state);
+        assert!(saved.selection.is_none());
     }
 }

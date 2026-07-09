@@ -558,11 +558,15 @@ impl TextropolisState {
     }
 
     pub(super) fn record_accepted(&mut self, word: &str) {
-        let city = self.active_city_name().to_string();
+        let city = self.active_city_name();
+        self.record_accepted_for_city(city, word);
+    }
+
+    pub(super) fn record_accepted_for_city(&mut self, city: &str, word: &str) -> bool {
         self.guessed
-            .entry(city)
+            .entry(city.to_string())
             .or_default()
-            .insert(word.to_string());
+            .insert(word.to_string())
     }
 
     fn hint_cost(&self, city: &str, word: &str) -> usize {

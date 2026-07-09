@@ -147,6 +147,10 @@ pub(super) enum GuessResult {
         word: String,
         path: Vec<Coord>,
     },
+    AlreadySubword {
+        word: String,
+        path: Vec<Coord>,
+    },
     Empty,
     TooShort {
         word: String,
@@ -207,13 +211,7 @@ impl SavedProgress {
             .retain(|word, path| words.contains(word) && path_belongs_to_word(&puzzle, word, path));
         self.subwords
             .retain(|word, path| subword_belongs_to_puzzle(data, &puzzle, word, path));
-        if self
-            .selection
-            .as_ref()
-            .is_some_and(|selection| !valid_selection_for_puzzle(&puzzle, selection))
-        {
-            self.selection = None;
-        }
+        self.selection = None;
         self.puzzle = Some(puzzle);
         Some(self)
     }
@@ -226,7 +224,7 @@ impl From<&WordHuntState> for SavedProgress {
             found: state.found.clone(),
             revealed: state.revealed.clone(),
             subwords: state.subwords.clone(),
-            selection: state.selection.clone(),
+            selection: None,
         }
     }
 }
@@ -497,7 +495,10 @@ impl WordHuntState {
     }
 
     pub(super) fn subword_count(&self) -> usize {
-        self.subwords.len()
+        self.subwords
+            .keys()
+            .filter(|word| !self.puzzle_has_word(word))
+            .count()
     }
 
     pub(super) fn revealed_count(&self) -> usize {
@@ -577,19 +578,25 @@ impl WordHuntState {
 
     pub(super) fn subword_paths(&self) -> Vec<Vec<Coord>> {
         self.subwords
-            .values()
-            .filter(|path| {
-                !self
-                    .found
-                    .values()
-                    .any(|found_path| path_is_contiguous_subset(path, found_path))
+            .iter()
+            .filter(|(word, path)| {
+                !self.puzzle_has_word(word)
+                    && !self
+                        .found
+                        .values()
+                        .any(|found_path| path_is_contiguous_subset(path, found_path))
             })
+            .map(|(_, path)| path)
             .cloned()
             .collect()
     }
 
     pub(super) fn subwords(&self) -> Vec<String> {
-        self.subwords.keys().cloned().collect()
+        self.subwords
+            .keys()
+            .filter(|word| !self.puzzle_has_word(word))
+            .cloned()
+            .collect()
     }
 
     pub(super) fn definitions_for(&self, word: &str) -> Vec<Definition> {
@@ -673,6 +680,9 @@ impl WordHuntState {
         let Some((word, path)) = self.matching_word_for_path(&selection.coords) else {
             self.selection = None;
             if let Some((word, path)) = self.subword_for_path(&selection.coords, &selected) {
+                if self.subwords.contains_key(&word) {
+                    return GuessResult::AlreadySubword { word, path };
+                }
                 self.subwords.insert(word.clone(), path.clone());
                 return GuessResult::Subword { word, path };
             }
@@ -763,8 +773,15 @@ impl WordHuntState {
         })
     }
 
+    fn puzzle_has_word(&self, word: &str) -> bool {
+        self.puzzle.words.iter().any(|entry| entry.word == word)
+    }
+
     fn subword_for_path(&self, path: &[Coord], selected: &str) -> Option<(String, Vec<Coord>)> {
-        if selected.len() < MIN_WORD_LEN || !self.data.is_word(selected) {
+        if selected.len() < MIN_WORD_LEN
+            || !self.data.is_word(selected)
+            || self.puzzle_has_word(selected)
+        {
             return None;
         }
         self.puzzle.words.iter().find_map(|entry| {
@@ -859,15 +876,6 @@ fn validate_puzzle(data: &WordHuntData, puzzle: Puzzle) -> Option<Puzzle> {
     Some(solved)
 }
 
-fn valid_selection_for_puzzle(puzzle: &Puzzle, selection: &Selection) -> bool {
-    WordHuntState::line_between(selection.start, selection.end)
-        .is_some_and(|coords| coords == selection.coords)
-        && selection
-            .coords
-            .iter()
-            .all(|coord| coord.row < puzzle.rows() && coord.col < puzzle.cols())
-}
-
 fn path_belongs_to_word(puzzle: &Puzzle, word: &str, path: &[Coord]) -> bool {
     puzzle
         .words
@@ -884,6 +892,7 @@ fn subword_belongs_to_puzzle(
 ) -> bool {
     word.len() >= MIN_WORD_LEN
         && data.is_word(word)
+        && !puzzle.words.iter().any(|entry| entry.word == word)
         && word_from_puzzle_path(puzzle, path).as_deref() == Some(word)
         && puzzle.words.iter().any(|entry| {
             entry.word.len() > word.len()
@@ -1154,7 +1163,11 @@ fn remove_strict_subset_paths(words: &mut Vec<BoardWord>) {
 }
 
 fn path_is_contiguous_subset(path: &[Coord], other: &[Coord]) -> bool {
-    path.len() < other.len() && other.windows(path.len()).any(|window| window == path)
+    !path.is_empty()
+        && path.len() < other.len()
+        && other
+            .windows(path.len())
+            .any(|window| window == path || window.iter().rev().eq(path.iter()))
 }
 
 fn choose_seed_word_of_len(buckets: &[Vec<&str>], len: usize, rng: &mut Lcg) -> Option<String> {

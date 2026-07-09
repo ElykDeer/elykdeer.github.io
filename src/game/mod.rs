@@ -21,7 +21,9 @@ pub fn clear_wordhunt_progress() {
 #[component]
 pub fn GameLaunchView(launch: GameLaunch) -> impl IntoView {
     match launch {
-        GameLaunch::Bubbles { hard } => view! { <BubblesGame hard=hard /> }.into_any(),
+        GameLaunch::Bubbles { hard, cheat } => {
+            view! { <BubblesGame hard=hard cheat=cheat /> }.into_any()
+        }
         GameLaunch::Textropolis => view! { <TextropolisGame /> }.into_any(),
         GameLaunch::WordHunt {
             reveal,
@@ -39,7 +41,11 @@ pub fn clear_high_score() {}
 
 #[cfg(not(target_arch = "wasm32"))]
 #[component]
-pub fn BubblesGame(#[prop(default = false)] hard: bool) -> impl IntoView {
+pub fn BubblesGame(
+    #[prop(default = false)] hard: bool,
+    #[prop(default = false)] cheat: bool,
+) -> impl IntoView {
+    let _ = cheat;
     let mode = if hard { "hard mode" } else { "normal mode" };
     view! {
         <section class="terminal-game">

@@ -6,7 +6,7 @@ use leptos::html::{Div, Textarea};
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{FocusEvent, KeyboardEvent, MouseEvent};
+use web_sys::{KeyboardEvent, MouseEvent};
 
 use crate::commands;
 use crate::game::GameLaunchView;
@@ -43,9 +43,11 @@ pub fn App() -> impl IntoView {
     let transcript = RwSignal::new(Vec::<TerminalEntry>::new());
     let next_id = RwSignal::new(0usize);
     let profile_ready = RwSignal::new(false);
+    let terminal_focused = RwSignal::new(false);
 
-    // IndexedDB is async; hold command input until the stored profile has been
-    // loaded so early commands cannot be overwritten by the arriving profile.
+    // Profile hydration should be quick now that large assets preload after the
+    // initial UI. Keep command execution behind it so saved state cannot be
+    // overwritten by early edits.
     spawn_local(async move {
         let error = match load_profile().await {
             Ok(profile) => {
@@ -103,6 +105,9 @@ pub fn App() -> impl IntoView {
     });
 
     let submit_command = move || {
+        if !profile_ready.get_untracked() {
+            return;
+        }
         // The textarea holds the whole (possibly multiline) command; keep it raw
         // so Python sees real indentation.
         let raw = command_input.get();
@@ -222,13 +227,15 @@ pub fn App() -> impl IntoView {
         append_entry(transcript, next_id, prompt, output);
     };
 
-    // Run /root/.rc on the first click into the terminal (not on load): each line
-    // is run like typed input, so it supports pipes, python3, and package scripts.
-    let focus_terminal_input = move |ev: MouseEvent| {
-        if should_focus_terminal_input(&ev) {
-            focus_command_input(command_input_ref);
+    let run_rc_if_ready = move || {
+        if rc_ran.get_untracked()
+            || !terminal_focused.get_untracked()
+            || !profile_ready.get_untracked()
+        {
+            return;
         }
-        if rc_ran.get_untracked() || !profile_ready.get_untracked() {
+        if !command_input.get_untracked().is_empty() {
+            rc_ran.set(true);
             return;
         }
         rc_ran.set(true);
@@ -249,6 +256,23 @@ pub fn App() -> impl IntoView {
                 submit_command();
             }
             quiet.set(false);
+        }
+    };
+
+    Effect::new(move |_| {
+        let _ = profile_ready.get();
+        let _ = terminal_focused.get();
+        run_rc_if_ready();
+    });
+
+    // Run /root/.rc after the first terminal focus and profile hydration: each
+    // line is run like typed input, so it supports pipes, python3, and package
+    // scripts without delaying the initial prompt.
+    let focus_terminal_input = move |ev: MouseEvent| {
+        if should_focus_terminal_input(&ev) {
+            terminal_focused.set(true);
+            focus_command_input(command_input_ref);
+            run_rc_if_ready();
         }
     };
 
@@ -401,32 +425,6 @@ pub fn App() -> impl IntoView {
         }
     };
 
-    let handle_history_previous_focus = move |ev: FocusEvent| {
-        ev.prevent_default();
-        recall_history(
-            HistoryDirection::Previous,
-            ctx,
-            command_input,
-            history_cursor,
-            history_draft,
-            python_mode,
-        );
-        focus_command_input(command_input_ref);
-    };
-
-    let handle_history_next_focus = move |ev: FocusEvent| {
-        ev.prevent_default();
-        recall_history(
-            HistoryDirection::Next,
-            ctx,
-            command_input,
-            history_cursor,
-            history_draft,
-            python_mode,
-        );
-        focus_command_input(command_input_ref);
-    };
-
     view! {
         <main class="site-shell">
             <section class="terminal-surface" aria-label="Terminal" on:click=focus_terminal_input>
@@ -494,15 +492,6 @@ pub fn App() -> impl IntoView {
                                 }
                             }}
                         </label>
-                        <input
-                            class="terminal-history-sentinel"
-                            type="text"
-                            tabindex="0"
-                            inputmode="none"
-                            autocomplete="off"
-                            aria-label="Previous command"
-                            on:focus=handle_history_previous_focus
-                        />
                         <textarea
                             id="terminal-command"
                             class="terminal-input"
@@ -511,7 +500,6 @@ pub fn App() -> impl IntoView {
                             autocapitalize="none"
                             enterkeyhint="enter"
                             spellcheck="false"
-                            disabled={move || !profile_ready.get()}
                             node_ref=command_input_ref
                             on:input={move |ev| {
                                 history_cursor.set(None);
@@ -519,16 +507,7 @@ pub fn App() -> impl IntoView {
                             }}
                             on:keydown=handle_command_keydown
                         ></textarea>
-                        <input
-                            class="terminal-history-sentinel"
-                            type="text"
-                            tabindex="0"
-                            inputmode="none"
-                            autocomplete="off"
-                            aria-label="Next command"
-                            on:focus=handle_history_next_focus
-                        />
-                        <button class="terminal-submit" type="submit" disabled={move || !profile_ready.get()}>"Run"</button>
+                        <button class="terminal-submit" type="submit">"Run"</button>
                     </form>
                 </div>
             </section>
@@ -1668,7 +1647,10 @@ mod tests {
     fn close_game_blocks_replaces_nested_launches() {
         let mut blocks = vec![
             OutputBlock::Text("keep".to_string()),
-            OutputBlock::LaunchGame(GameLaunch::Bubbles { hard: true }),
+            OutputBlock::LaunchGame(GameLaunch::Bubbles {
+                hard: true,
+                cheat: false,
+            }),
             OutputBlock::Panel {
                 title: "panel".to_string(),
                 body: vec![OutputBlock::LaunchGame(GameLaunch::Textropolis)],
@@ -1699,6 +1681,7 @@ mod tests {
     fn keyed_output_blocks_changes_key_when_block_changes() {
         let old_key = keyed_output_blocks(vec![OutputBlock::LaunchGame(GameLaunch::Bubbles {
             hard: false,
+            cheat: false,
         })])
         .remove(0)
         .0;

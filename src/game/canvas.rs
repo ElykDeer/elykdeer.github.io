@@ -14,7 +14,7 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, KeyboardEvent, MouseE
 
 use super::core::{
     score_breakdown, Board, BubbleColor, BubbleGame, CellCoord, Resolution, SavedBubbleGame, COLS,
-    ROWS,
+    ROWS, ROW_UPGRADE_LEVELS,
 };
 
 const HIGH_SCORE_STORAGE_KEY: &str = "elyk.bubbles.high-score";
@@ -27,7 +27,10 @@ const DROP_RESET_COST: u64 = 800;
 
 /// Canvas implementation for the terminal bubbles game.
 #[component]
-pub fn BubblesGame(#[prop(default = false)] hard: bool) -> impl IntoView {
+pub fn BubblesGame(
+    #[prop(default = false)] hard: bool,
+    #[prop(default = false)] cheat: bool,
+) -> impl IntoView {
     let canvas_ref = NodeRef::<Canvas>::new();
     let high_score = load_high_score();
     let saved_game = load_saved_game(hard, high_score);
@@ -339,7 +342,7 @@ pub fn BubblesGame(#[prop(default = false)] hard: bool) -> impl IntoView {
     };
 
     #[cfg(debug_assertions)]
-    let debug_controls = {
+    let debug_controls = if cheat {
         let debug_shop_runner = Rc::clone(&runner);
         let debug_score_runner = Rc::clone(&runner);
         let debug_jump_to_shop = move |ev: MouseEvent| {
@@ -386,9 +389,14 @@ pub fn BubblesGame(#[prop(default = false)] hard: bool) -> impl IntoView {
             </div>
         }
         .into_any()
+    } else {
+        view! {}.into_any()
     };
     #[cfg(not(debug_assertions))]
-    let debug_controls = view! {}.into_any();
+    let debug_controls = {
+        let _ = cheat;
+        view! {}.into_any()
+    };
 
     view! {
         <section class="terminal-game bubbles-game" aria-label="Bubbles">
@@ -724,8 +732,8 @@ const DROP_SLIDE: f64 = 0.20;
 /// less than that lets a shot slip a bit further into a gap before snapping.
 const COLLISION_TOLERANCE: f64 = 1.55;
 const SHOT_CAST_STEP_RADIUS: f64 = 0.42;
-const BASE_TRACE_DISTANCE_RADIUS: f64 = 4.5;
-const TRACE_DISTANCE_PER_LEVEL_RADIUS: f64 = 6.5;
+const DEFAULT_TRACE_DISTANCE_RADIUS: f64 = 22.0;
+const LEVEL_ONE_TRACE_MULTIPLIER: f64 = 2.0;
 const BANK_DISTANCE_PER_LEVEL_RADIUS: f64 = 4.0;
 const BASE_TRACE_BOUNCES: u8 = 1;
 const FULL_TRACE_BOUNCES: u8 = 80;
@@ -1443,16 +1451,24 @@ impl CanvasRunner {
                 self.game.run.pop_drop_level as u32
             }
             ShopUpgrade::CleanStart => {
-                self.game.run.clean_start_level =
-                    self.game.run.clean_start_level.saturating_add(1).min(2);
+                self.game.run.clean_start_level = self
+                    .game
+                    .run
+                    .clean_start_level
+                    .saturating_add(1)
+                    .min(ROW_UPGRADE_LEVELS);
                 self.game.run.clean_start_enabled = true;
                 self.game.run.clean_start_active_level = self.game.run.clean_start_level;
                 self.disable_extra_rows();
                 self.game.run.clean_start_level as u32
             }
             ShopUpgrade::ExtraRows => {
-                self.game.run.extra_rows_level =
-                    self.game.run.extra_rows_level.saturating_add(1).min(2);
+                self.game.run.extra_rows_level = self
+                    .game
+                    .run
+                    .extra_rows_level
+                    .saturating_add(1)
+                    .min(ROW_UPGRADE_LEVELS);
                 self.game.run.extra_rows_enabled = true;
                 self.game.run.extra_rows_active_level = self.game.run.extra_rows_level;
                 self.disable_clean_start();
@@ -1854,7 +1870,7 @@ impl CanvasRunner {
                 cost: 1500 + self.game.run.clean_start_level as u64 * 800,
                 level: self.game.run.clean_start_level as u32,
                 active_level: self.game.run.active_clean_start_level() as u32,
-                max_level: Some(2),
+                max_level: Some(ROW_UPGRADE_LEVELS as u32),
                 owned: self.game.run.clean_start_level > 0,
                 enabled: self.game.run.active_clean_start_level() > 0,
             },
@@ -1864,7 +1880,7 @@ impl CanvasRunner {
                 cost: 1200 + self.game.run.extra_rows_level as u64 * 700,
                 level: self.game.run.extra_rows_level as u32,
                 active_level: self.game.run.active_extra_rows_level() as u32,
-                max_level: Some(2),
+                max_level: Some(ROW_UPGRADE_LEVELS as u32),
                 owned: self.game.run.extra_rows_level > 0,
                 enabled: self.game.run.active_extra_rows_level() > 0,
             },
@@ -2964,6 +2980,31 @@ struct AimTrace {
     landing: Option<CellCoord>,
 }
 
+fn aim_trace_config(reticle_level: u8, bank_sight_level: u8) -> (Option<f64>, u8) {
+    let reticle_level = reticle_level.min(2);
+    let bank_level = bank_sight_level.min(3);
+    let infinite_trace = reticle_level >= 2 || bank_level == 3;
+    let bounces = if infinite_trace {
+        FULL_TRACE_BOUNCES
+    } else {
+        BASE_TRACE_BOUNCES + bank_level
+    };
+    let distance = if infinite_trace {
+        None
+    } else {
+        let reticle_multiplier = if reticle_level >= 1 {
+            LEVEL_ONE_TRACE_MULTIPLIER
+        } else {
+            1.0
+        };
+        Some(
+            DEFAULT_TRACE_DISTANCE_RADIUS * reticle_multiplier
+                + f64::from(bank_level) * BANK_DISTANCE_PER_LEVEL_RADIUS,
+        )
+    };
+    (distance, bounces)
+}
+
 fn cast_aim_trace(
     board: &Board,
     layout: BubbleLayout,
@@ -2975,25 +3016,13 @@ fn cast_aim_trace(
     let mut y = layout.cannon_y;
     let mut vx = angle.cos();
     let vy = angle.sin();
-    let trace_level = reticle_level.max(1).min(3);
-    let bank_level = bank_sight_level.min(3);
-    let full_distance = trace_level == 3 || bank_level == 3;
-    let unlimited_bounces = bank_level == 3;
-    let max_distance = if full_distance {
-        (layout.width + layout.height) * 4.0
-    } else {
-        layout.radius
-            * (BASE_TRACE_DISTANCE_RADIUS
-                + f64::from(trace_level) * TRACE_DISTANCE_PER_LEVEL_RADIUS
-                + f64::from(bank_level) * BANK_DISTANCE_PER_LEVEL_RADIUS)
-    };
+    let (trace_distance_radius, mut bounces_left) =
+        aim_trace_config(reticle_level, bank_sight_level);
+    let max_distance = trace_distance_radius
+        .map(|distance| layout.radius * distance)
+        .unwrap_or_else(|| (layout.width + layout.height) * 4.0);
     let step = layout.radius * SHOT_CAST_STEP_RADIUS;
     let max_steps = (max_distance / step).ceil().max(1.0) as usize;
-    let mut bounces_left = if unlimited_bounces {
-        FULL_TRACE_BOUNCES
-    } else {
-        BASE_TRACE_BOUNCES + bank_level
-    };
     let mut points = Vec::with_capacity(max_steps.min(192) + 1);
     points.push((x, y));
 
@@ -3666,8 +3695,8 @@ fn shop_upgrade_card_help(option: &ShopOption) -> &'static str {
             _ => "Fastest drops.",
         },
         ShopUpgrade::PopDrop => "Pops advance drops.",
-        ShopUpgrade::CleanStart => "Fewer start rows.",
-        ShopUpgrade::ExtraRows => "More start rows.",
+        ShopUpgrade::CleanStart => "1 fewer start row.",
+        ShopUpgrade::ExtraRows => "1 more start row.",
         ShopUpgrade::QueueSight => match option.level {
             0 => "+1 queue bubble.",
             1 => "More queue sight.",
@@ -3675,7 +3704,7 @@ fn shop_upgrade_card_help(option: &ShopOption) -> &'static str {
         },
         ShopUpgrade::TraceSight => "Shows a ghost landing bubble.",
         ShopUpgrade::Reticle => match option.level {
-            0 => "Longer aim guide.",
+            0 => "Doubles aim guide.",
             _ => "Full aim guide.",
         },
         ShopUpgrade::LandingDot => "Shows path endpoint dot.",
@@ -3733,8 +3762,8 @@ fn shop_upgrade_micro_help(option: &ShopOption) -> &'static str {
         ShopUpgrade::SoftCeiling => "More shots before drops.",
         ShopUpgrade::DropHaste => "Rows drop sooner.",
         ShopUpgrade::PopDrop => "Pops count toward drops.",
-        ShopUpgrade::CleanStart => "Fewer start rows.",
-        ShopUpgrade::ExtraRows => "More start rows.",
+        ShopUpgrade::CleanStart => "-1 start row.",
+        ShopUpgrade::ExtraRows => "+1 start row.",
         ShopUpgrade::QueueSight => "Shows more queue.",
         ShopUpgrade::TraceSight => "Ghost landing bubble.",
         ShopUpgrade::Reticle => "Longer aim line.",
@@ -4490,6 +4519,28 @@ pub fn clear_high_score() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reticle_level_one_doubles_default_aim_guide() {
+        let (default_distance, default_bounces) = aim_trace_config(0, 0);
+        let (level_one_distance, level_one_bounces) = aim_trace_config(1, 0);
+
+        assert_eq!(default_distance, Some(DEFAULT_TRACE_DISTANCE_RADIUS));
+        assert_eq!(
+            level_one_distance,
+            Some(DEFAULT_TRACE_DISTANCE_RADIUS * LEVEL_ONE_TRACE_MULTIPLIER)
+        );
+        assert_eq!(default_bounces, BASE_TRACE_BOUNCES);
+        assert_eq!(level_one_bounces, BASE_TRACE_BOUNCES);
+    }
+
+    #[test]
+    fn reticle_level_two_has_full_aim_guide() {
+        let (distance, bounces) = aim_trace_config(2, 0);
+
+        assert_eq!(distance, None);
+        assert_eq!(bounces, FULL_TRACE_BOUNCES);
+    }
 
     #[test]
     fn stored_save_allows_original_or_current_game_only() {

@@ -499,7 +499,31 @@ mod tests {
 
         assert_eq!(
             run_line(&mut ctx, "bubbles hard"),
-            vec![OutputBlock::LaunchGame(GameLaunch::Bubbles { hard: true })]
+            vec![OutputBlock::LaunchGame(GameLaunch::Bubbles {
+                hard: true,
+                cheat: false
+            })]
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn bubbles_cheat_launches_debug_cheat_mode() {
+        let mut ctx = TerminalContext::new();
+
+        assert_eq!(
+            run_line(&mut ctx, "bubbles cheat"),
+            vec![OutputBlock::LaunchGame(GameLaunch::Bubbles {
+                hard: false,
+                cheat: true
+            })]
+        );
+        assert_eq!(
+            run_line(&mut ctx, "bubbles hard cheat"),
+            vec![OutputBlock::LaunchGame(GameLaunch::Bubbles {
+                hard: true,
+                cheat: true
+            })]
         );
     }
 

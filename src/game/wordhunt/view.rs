@@ -356,17 +356,12 @@ fn launch_board_request(board: WordHuntLaunchBoard) -> BoardRequest {
 }
 
 fn stage_style(rows: usize, cols: usize) -> String {
-    let ratio = cols as f32 / rows.max(1) as f32;
     format!(
-        "--wordhunt-rows:{};--wordhunt-cols:{};--wordhunt-fixed-width:{:.3}rem;--wordhunt-fixed-width-mobile:{:.3}rem;--wordhunt-fit-width:calc({:.3}svh - {:.3}rem);--wordhunt-fit-width-mobile:calc({:.3}svh - {:.3}rem);",
+        "--wordhunt-rows:{};--wordhunt-cols:{};--wordhunt-fixed-width:{:.3}rem;--wordhunt-fixed-width-mobile:{:.3}rem;",
         rows,
         cols,
         cols as f32 * 2.25,
-        cols as f32 * 1.38,
-        ratio * 100.0,
-        ratio * 7.5,
-        ratio * 100.0,
-        ratio * 5.3,
+        cols as f32 * 2.07,
     )
 }
 
@@ -448,12 +443,17 @@ fn feedback_for_guess(result: &GuessResult) -> (String, FeedbackTone, Option<Str
             Some(word.clone()),
         ),
         GuessResult::AlreadyFound { word, .. } => (
-            format!("Already {}", word.to_ascii_uppercase()),
+            format!("Already found {}", word.to_ascii_uppercase()),
             FeedbackTone::Warn,
             Some(word.clone()),
         ),
         GuessResult::Subword { word, .. } => (
             format!("Subword found: {}", word.to_ascii_uppercase()),
+            FeedbackTone::Warn,
+            None,
+        ),
+        GuessResult::AlreadySubword { word, .. } => (
+            format!("Already found subword: {}", word.to_ascii_uppercase()),
             FeedbackTone::Warn,
             None,
         ),
@@ -1667,4 +1667,30 @@ fn alphabet_letter_from_point(_x: i32, _y: i32) -> Option<char> {
 fn parse_coord(raw: &str) -> Option<Coord> {
     let (row, col) = raw.split_once(',')?;
     Some(Coord::new(row.parse().ok()?, col.parse().ok()?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repeated_word_feedback_says_already_found() {
+        let (message, _, _) = feedback_for_guess(&GuessResult::AlreadyFound {
+            word: "able".to_string(),
+            path: Vec::new(),
+            definitions: Vec::<Definition>::new(),
+        });
+
+        assert_eq!(message, "Already found ABLE");
+    }
+
+    #[test]
+    fn repeated_subword_feedback_says_already_found_subword() {
+        let (message, _, _) = feedback_for_guess(&GuessResult::AlreadySubword {
+            word: "able".to_string(),
+            path: Vec::new(),
+        });
+
+        assert_eq!(message, "Already found subword: ABLE");
+    }
 }

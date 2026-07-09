@@ -96,6 +96,13 @@ struct WordListEntry {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingDefinitionRequest {
+    word: String,
+    kind: FlyingDefinitionKind,
+    record_city: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TickerItem {
     key: String,
     entry: WordListEntry,
@@ -395,6 +402,17 @@ fn queue_definitions(
         definitions.retain(|definition| base_ms < definition.started_ms + definition.duration_ms);
         definitions.extend(queued);
         resolve_definition_lanes(definitions, base_ms);
+    });
+}
+
+fn queue_pending_definition(
+    pending_definition: &RwSignal<Vec<PendingDefinitionRequest>>,
+    request: PendingDefinitionRequest,
+) {
+    pending_definition.update(|requests| {
+        if !requests.iter().any(|existing| existing == &request) {
+            requests.push(request);
+        }
     });
 }
 
@@ -804,7 +822,7 @@ pub fn TextropolisGame() -> impl IntoView {
     let definitions = RwSignal::new(Vec::<FlyingDefinition>::new());
     let next_banner_id = RwSignal::new(0_u64);
     let dictionary_loading = RwSignal::new(false);
-    let pending_definition = RwSignal::new(None::<(String, FlyingDefinitionKind)>);
+    let pending_definition = RwSignal::new(Vec::<PendingDefinitionRequest>::new());
 
     #[cfg(target_arch = "wasm32")]
     spawn_local(async move {
@@ -822,31 +840,74 @@ pub fn TextropolisGame() -> impl IntoView {
                                 }
                             });
                             dictionary_loading.set(false);
-                            if let Some((word, kind)) = pending_definition.get_untracked() {
+                            let pending_requests = pending_definition.get_untracked();
+                            if !pending_requests.is_empty() {
+                                pending_definition.set(Vec::new());
+                                let mut accepted_feedback = None::<String>;
                                 let entries = load.with_untracked(|load| match load {
-                                    DictionaryLoad::Ready(state) => {
-                                        state.data.definitions_for(&word)
-                                    }
+                                    DictionaryLoad::Ready(state) => Some(
+                                        pending_requests
+                                            .iter()
+                                            .map(|request| {
+                                                (
+                                                    request.clone(),
+                                                    state.data.definitions_for(&request.word),
+                                                )
+                                            })
+                                            .collect::<Vec<_>>(),
+                                    ),
                                     _ => None,
                                 });
                                 if let Some(entries) = entries {
-                                    queue_definitions(
-                                        &definitions,
-                                        &next_banner_id,
-                                        &word,
-                                        &entries,
-                                        kind,
-                                        true,
-                                    );
-                                    pending_definition.set(None);
-                                    feedback.set(String::new());
-                                    feedback_tone.set(FeedbackTone::Neutral);
+                                    for (request, entries) in
+                                        entries.into_iter().filter_map(|(request, entries)| {
+                                            entries.map(|entries| (request, entries))
+                                        })
+                                    {
+                                        if let Some(city) = request.record_city.as_deref() {
+                                            let word = request.word.clone();
+                                            let mut recorded = false;
+                                            load.update(|load| {
+                                                if let DictionaryLoad::Ready(state) = load {
+                                                    recorded =
+                                                        state.record_accepted_for_city(city, &word);
+                                                    if recorded {
+                                                        save_progress(state);
+                                                    }
+                                                }
+                                            });
+                                            if recorded {
+                                                accepted_feedback = Some(format!(
+                                                    "+{}",
+                                                    format_people(
+                                                        TextropolisState::word_population(&word)
+                                                    )
+                                                ));
+                                            }
+                                        }
+                                        queue_definitions(
+                                            &definitions,
+                                            &next_banner_id,
+                                            &request.word,
+                                            &entries,
+                                            request.kind,
+                                            true,
+                                        );
+                                    }
+                                    if let Some(message) = accepted_feedback {
+                                        feedback.set(message);
+                                        feedback_tone.set(FeedbackTone::Good);
+                                        feedback_tick.update(|tick| *tick = tick.wrapping_add(1));
+                                    } else {
+                                        feedback.set(String::new());
+                                        feedback_tone.set(FeedbackTone::Neutral);
+                                    }
                                 }
                             }
                         }
                         Err(err) => {
                             dictionary_loading.set(false);
-                            if pending_definition.get_untracked().is_some() {
+                            if !pending_definition.get_untracked().is_empty() {
                                 feedback.set(format!("Dictionary failed: {err}"));
                                 feedback_tone.set(FeedbackTone::Error);
                             }
@@ -897,6 +958,28 @@ pub fn TextropolisGame() -> impl IntoView {
             |load| matches!(load, DictionaryLoad::Ready(state) if state.definitions_loaded()),
         );
         if let Some((word, entries, should_record)) = definition_source {
+            if !definitions_ready {
+                let record_city = should_record.then(|| {
+                    load.with_untracked(|load| match load {
+                        DictionaryLoad::Ready(state) => state
+                            .current_city_index()
+                            .map(|index| state.city_name(index).to_string()),
+                        _ => None,
+                    })
+                });
+                queue_pending_definition(
+                    &pending_definition,
+                    PendingDefinitionRequest {
+                        word: word.clone(),
+                        kind: FlyingDefinitionKind::Definition,
+                        record_city: record_city.flatten(),
+                    },
+                );
+                feedback.set(dictionary_waiting_message());
+                feedback_tone.set(FeedbackTone::Warn);
+                feedback_tick.update(|tick| *tick = tick.wrapping_add(1));
+                return;
+            }
             load.update(|load| {
                 if let DictionaryLoad::Ready(state) = load {
                     if should_record {
@@ -906,13 +989,6 @@ pub fn TextropolisGame() -> impl IntoView {
                     }
                 }
             });
-            if entries.is_empty() && !definitions_ready {
-                pending_definition.set(Some((word.clone(), FlyingDefinitionKind::Definition)));
-                feedback.set(dictionary_waiting_message());
-                feedback_tone.set(FeedbackTone::Warn);
-                feedback_tick.update(|tick| *tick = tick.wrapping_add(1));
-                return;
-            }
             queue_definitions(
                 &definitions,
                 &next_banner_id,
@@ -1002,7 +1078,14 @@ pub fn TextropolisGame() -> impl IntoView {
                     matches!(load, DictionaryLoad::Ready(state) if state.definitions_loaded())
                 })
             {
-                pending_definition.set(Some((word.clone(), FlyingDefinitionKind::Definition)));
+                queue_pending_definition(
+                    &pending_definition,
+                    PendingDefinitionRequest {
+                        word: word.clone(),
+                        kind: FlyingDefinitionKind::Definition,
+                        record_city: None,
+                    },
+                );
                 feedback.set(dictionary_waiting_message());
                 feedback_tone.set(FeedbackTone::Warn);
                 feedback_tick.update(|tick| *tick = tick.wrapping_add(1));
@@ -1021,7 +1104,14 @@ pub fn TextropolisGame() -> impl IntoView {
             true
         } else {
             if dictionary_loading.get_untracked() {
-                pending_definition.set(Some((word.clone(), FlyingDefinitionKind::Definition)));
+                queue_pending_definition(
+                    &pending_definition,
+                    PendingDefinitionRequest {
+                        word: word.clone(),
+                        kind: FlyingDefinitionKind::Definition,
+                        record_city: None,
+                    },
+                );
                 feedback.set(dictionary_waiting_message());
                 feedback_tone.set(FeedbackTone::Warn);
                 feedback_tick.update(|tick| *tick = tick.wrapping_add(1));
@@ -1043,7 +1133,14 @@ pub fn TextropolisGame() -> impl IntoView {
                     matches!(load, DictionaryLoad::Ready(state) if state.definitions_loaded())
                 })
             {
-                pending_definition.set(Some((word.clone(), FlyingDefinitionKind::Hint)));
+                queue_pending_definition(
+                    &pending_definition,
+                    PendingDefinitionRequest {
+                        word: word.clone(),
+                        kind: FlyingDefinitionKind::Hint,
+                        record_city: None,
+                    },
+                );
                 feedback.set(dictionary_waiting_message());
                 feedback_tone.set(FeedbackTone::Warn);
                 feedback_tick.update(|tick| *tick = tick.wrapping_add(1));
@@ -1127,7 +1224,14 @@ pub fn TextropolisGame() -> impl IntoView {
                     matches!(load, DictionaryLoad::Ready(state) if state.definitions_loaded())
                 })
             {
-                pending_definition.set(Some((word.clone(), FlyingDefinitionKind::Hint)));
+                queue_pending_definition(
+                    &pending_definition,
+                    PendingDefinitionRequest {
+                        word: word.clone(),
+                        kind: FlyingDefinitionKind::Hint,
+                        record_city: None,
+                    },
+                );
                 feedback.set(dictionary_waiting_message());
                 feedback_tone.set(FeedbackTone::Warn);
                 feedback_tick.update(|tick| *tick = tick.wrapping_add(1));

@@ -275,14 +275,7 @@ const MAX_HISTORY_ENTRIES: usize = 200;
 // lines (a Python block) and the file still reads/edits like normal text.
 fn read_history(vfs: &VirtualFileSystem, path: &str) -> Vec<String> {
     vfs.read_file("/", path)
-        .map(|file| {
-            file.content
-                .split("\n\n")
-                .map(str::trim)
-                .filter(|entry| !entry.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
+        .map(|file| history_entries_from_content(&file.content))
         .unwrap_or_default()
 }
 
@@ -298,6 +291,15 @@ fn append_history(vfs: &mut VirtualFileSystem, path: &str, entry: &str) {
         entries.drain(0..entries.len() - MAX_HISTORY_ENTRIES);
     }
     let _ = vfs.write_file("/", path, entries.join("\n\n"));
+}
+
+fn history_entries_from_content(content: &str) -> Vec<String> {
+    content
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn console_script_names(vfs: &VirtualFileSystem) -> Vec<String> {
