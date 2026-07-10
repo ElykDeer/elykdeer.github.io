@@ -1,8 +1,21 @@
 # Rust build artifacts
 target/
+node_modules/
+__pycache__/
+*.py[cod]
 
 # Static site / frontend build output
 dist/
+
+# Generated word-data intermediates and reports. Runtime ships gzip only.
+dictionary.json
+wordlist.json
+textropolis-dictionary.json
+wordhunt-dictionary.json
+textropolis-dictionary.json.gz
+wordhunt-dictionary.json.gz
+textropolis-dictionary-audit.json
+textropolis-dictionary-audit.md
 
 # macOS
 .DS_Store

@@ -57,7 +57,7 @@ pub fn SaveManagerPanel(
             download_page_snapshot(&filename, &json);
             message.set(format!("Downloaded {filename}."));
         }
-        Err(err) => message.set(format!("Page snapshot failed: {err}")),
+        Err(err) => message.set(format!("Page backup failed: {err}")),
     };
 
     let handle_file_change = move |_: Event| {
@@ -79,13 +79,13 @@ pub fn SaveManagerPanel(
     view! {
         <section class="save-manager" on:dragover=handle_drag_over on:drop=handle_drop>
             <div class="save-manager-title">"save"</div>
-            <p>"Terminal, Bubbles, and Textropolis state."</p>
+            <p>"Terminal and game state."</p>
             <div class="save-manager-actions">
                 <button type="button" on:click=download_backup disabled=move || busy.get()>
                     "download save data"
                 </button>
                 <button type="button" on:click=download_page disabled=move || busy.get()>
-                    "download page snapshot"
+                    "download page backup"
                 </button>
                 <label class="save-manager-upload">
                     <input
@@ -98,7 +98,7 @@ pub fn SaveManagerPanel(
                     <span>"restore save"</span>
                 </label>
             </div>
-            <div class="save-manager-drop">"Drop save JSON or page snapshot here"</div>
+            <div class="save-manager-drop">"Drop save JSON or page backup here"</div>
             <div class="save-manager-message" role="status" aria-live="polite">
                 {move || message.get()}
             </div>

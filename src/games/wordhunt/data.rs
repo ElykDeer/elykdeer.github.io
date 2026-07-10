@@ -1,18 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-pub struct Definition {
-    pub definition: String,
-    pub part_of_speech: String,
-}
+use super::super::word_data::parse_word_list;
+pub(super) use super::super::word_data::Definition;
 
 #[derive(Deserialize)]
-#[serde(untagged)]
-enum WordListPayload {
-    Scoped { wordhunt: Vec<String> },
-    Flat(Vec<String>),
+struct ScopedWordList {
+    wordhunt: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,28 +20,13 @@ pub(super) struct WordHuntData {
 }
 
 impl WordHuntData {
-    #[allow(dead_code)]
-    pub(super) fn from_json(json: &str) -> Result<Self, String> {
-        Self::from_dictionary_json(json)
-    }
-
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub(super) fn from_word_list_json(json: &str) -> Result<Self, String> {
-        let words = match serde_json::from_str(json).map_err(|err| err.to_string())? {
-            WordListPayload::Scoped { wordhunt } => wordhunt,
-            WordListPayload::Flat(words) => words,
-        };
+        let words = parse_word_list::<ScopedWordList>(json, |payload| payload.wordhunt)?;
         Ok(Self::from_words(words))
     }
 
-    #[allow(dead_code)]
-    pub(super) fn from_dictionary_json(json: &str) -> Result<Self, String> {
-        let definitions: HashMap<String, Vec<Definition>> =
-            serde_json::from_str(json).map_err(|err| err.to_string())?;
-        Ok(Self::from_definitions(definitions))
-    }
-
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(super) fn from_definitions(definitions: HashMap<String, Vec<Definition>>) -> Self {
         let words = definitions.keys().cloned().collect::<Vec<_>>();
         let mut data = Self::from_words(words);

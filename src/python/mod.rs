@@ -3,11 +3,13 @@
 //! persists for the lifetime of the page.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::future::Future;
+use std::pin::Pin;
 
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::JsFuture;
+use wasm_bindgen_futures::{spawn_local, JsFuture};
 
 #[wasm_bindgen]
 extern "C" {
@@ -50,6 +52,61 @@ struct FsMirror {
 
 thread_local! {
     static MIRROR: RefCell<FsMirror> = RefCell::new(FsMirror::default());
+    static JOBS: RefCell<JobQueue> = RefCell::new(JobQueue::default());
+}
+
+type Job = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()>>>>;
+
+#[derive(Default)]
+struct JobQueue {
+    running: bool,
+    pending: VecDeque<Job>,
+}
+
+impl JobQueue {
+    fn push(&mut self, job: Job) -> bool {
+        self.pending.push_back(job);
+        if self.running {
+            false
+        } else {
+            self.running = true;
+            true
+        }
+    }
+
+    fn next(&mut self) -> Option<Job> {
+        match self.pending.pop_front() {
+            Some(job) => Some(job),
+            None => {
+                self.running = false;
+                None
+            }
+        }
+    }
+}
+
+/// Run work that touches Pyodide in submission order. A job owns the runtime
+/// until its filesystem changes and profile save have completed.
+pub fn spawn_job<F, Fut>(job: F)
+where
+    F: FnOnce() -> Fut + 'static,
+    Fut: Future<Output = ()> + 'static,
+{
+    let job: Job = Box::new(move || Box::pin(job()));
+    let start_runner = JOBS.with(|jobs| jobs.borrow_mut().push(job));
+    if !start_runner {
+        return;
+    }
+
+    spawn_local(async {
+        loop {
+            let next = JOBS.with(|jobs| jobs.borrow_mut().next());
+            let Some(job) = next else {
+                break;
+            };
+            job().await;
+        }
+    });
 }
 
 /// Whether Pyodide has finished loading.
@@ -322,4 +379,64 @@ fn describe_js_error(err: JsValue) -> String {
                 .and_then(|message| message.as_string())
         })
         .unwrap_or_else(|| "Python runtime error".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::rc::Rc;
+    use std::task::{Context, Poll, Waker};
+
+    fn inert_job() -> Job {
+        Box::new(|| Box::pin(async {}))
+    }
+
+    fn run_ready_job(job: Job) {
+        let mut future = job();
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            future.as_mut().poll(&mut context),
+            Poll::Ready(())
+        ));
+    }
+
+    #[test]
+    fn job_queue_starts_once_and_drains_in_fifo_order() {
+        let mut queue = JobQueue::default();
+
+        assert!(queue.push(inert_job()));
+        assert!(!queue.push(inert_job()));
+        assert!(queue.running);
+        assert_eq!(queue.pending.len(), 2);
+
+        assert!(queue.next().is_some());
+        assert!(queue.running);
+        assert!(queue.next().is_some());
+        assert!(queue.running);
+        assert!(queue.next().is_none());
+        assert!(!queue.running);
+    }
+
+    #[test]
+    fn queued_job_reads_state_after_prior_job_finishes() {
+        let state = Rc::new(RefCell::new(0));
+        let observed = Rc::new(RefCell::new(Vec::new()));
+        let mut queue = JobQueue::default();
+
+        let first_state = Rc::clone(&state);
+        queue.push(Box::new(move || {
+            Box::pin(async move { *first_state.borrow_mut() = 7 })
+        }));
+
+        let second_state = Rc::clone(&state);
+        let second_observed = Rc::clone(&observed);
+        queue.push(Box::new(move || {
+            Box::pin(async move { second_observed.borrow_mut().push(*second_state.borrow()) })
+        }));
+
+        run_ready_job(queue.next().unwrap());
+        run_ready_job(queue.next().unwrap());
+
+        assert_eq!(*observed.borrow(), vec![7]);
+    }
 }

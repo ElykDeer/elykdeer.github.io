@@ -143,11 +143,15 @@ mod tests {
     }
 
     #[test]
-    fn old_saved_progress_recomputes_population_from_guesses() {
+    fn saved_progress_recomputes_population_from_guesses() {
         let data = test_data();
-        let progress =
-            serde_json::from_str::<SavedProgress>(r#"{"guessed":{"Phoenix":["phone","hone"]}}"#)
-                .unwrap();
+        let progress = SavedProgress {
+            guessed: BTreeMap::from([(
+                "Phoenix".to_string(),
+                vec!["phone".to_string(), "hone".to_string()],
+            )]),
+            ..SavedProgress::default()
+        };
 
         let game = TextropolisState::with_progress(data, progress);
 
@@ -157,27 +161,72 @@ mod tests {
     }
 
     #[test]
-    fn legacy_saved_hints_convert_old_point_cost_to_population() {
+    fn saved_hints_use_the_current_cost() {
         let data = funded_hint_data();
-        let progress = serde_json::from_str::<SavedProgress>(
-            r#"{"guessed":{"Phoenix":["phone","hone","phoenix"]},"hints":{"Phoenix":["pheonix"]}}"#,
-        )
-        .unwrap();
+        let progress = SavedProgress {
+            guessed: BTreeMap::from([(
+                "Phoenix".to_string(),
+                vec![
+                    "phone".to_string(),
+                    "hone".to_string(),
+                    "phoenix".to_string(),
+                ],
+            )]),
+            hints: BTreeMap::from([("Phoenix".to_string(), vec!["pheonix".to_string()])]),
+            ..SavedProgress::default()
+        };
 
         let game = TextropolisState::with_progress(data, progress);
 
         assert_eq!(game.city_earned_population(0), 900);
-        assert_eq!(game.city_spent_population(0), 300);
-        assert_eq!(game.city_population(0), 600);
+        assert_eq!(game.city_spent_population(0), HINT_POPULATION_COST);
+        assert_eq!(game.city_population(0), 100);
 
         let saved = SavedProgress::from(&game);
         assert_eq!(
-            saved
-                .hint_costs
-                .get("Phoenix")
-                .and_then(|costs| costs.get("pheonix")),
-            Some(&300)
+            saved.hints.get("Phoenix"),
+            Some(&vec!["pheonix".to_string()])
         );
+    }
+
+    #[test]
+    fn production_v1_payload_without_version_preserves_progress() {
+        let data = funded_hint_data();
+        let production_save = r#"{
+            "guessed":{"Phoenix":["phone","hone","phoenix"]},
+            "hints":{"Phoenix":["pheonix"]},
+            "hint_costs":{"Phoenix":{"pheonix":300}}
+        }"#;
+        let progress = SavedProgress::from_json(production_save).expect("production v1 save");
+
+        let game = TextropolisState::with_progress(data, progress);
+
+        assert_eq!(game.city_found_count(0), 3);
+        assert_eq!(game.hinted_words(), vec!["pheonix".to_string()]);
+        assert_eq!(game.spent_population(), HINT_POPULATION_COST);
+    }
+
+    #[test]
+    fn unsupported_explicit_save_version_is_rejected() {
+        assert!(SavedProgress::from_json(r#"{"version":2,"guessed":{}}"#).is_none());
+    }
+
+    #[test]
+    fn current_saves_are_explicit_and_omit_legacy_hint_costs() {
+        let data = funded_hint_data();
+        let production_save = r#"{
+            "guessed":{"Phoenix":["phone","hone","phoenix"]},
+            "hints":{"Phoenix":["pheonix"]},
+            "hint_costs":{"Phoenix":{"pheonix":300}}
+        }"#;
+        let progress = SavedProgress::from_json(production_save).expect("production v1 save");
+        let game = TextropolisState::with_progress(data, progress);
+
+        let json = serde_json::to_value(SavedProgress::from(&game)).expect("serialize save");
+
+        assert_eq!(json["version"], 1);
+        assert!(json.get("hint_costs").is_none());
+        assert_eq!(json["hints"]["Phoenix"][0], "pheonix");
     }
 
     #[test]
@@ -237,13 +286,6 @@ mod tests {
         assert_eq!(
             saved.hints.get("Phoenix"),
             Some(&vec!["pheonix".to_string()])
-        );
-        assert_eq!(
-            saved
-                .hint_costs
-                .get("Phoenix")
-                .and_then(|costs| costs.get("pheonix")),
-            Some(&HINT_POPULATION_COST)
         );
     }
 

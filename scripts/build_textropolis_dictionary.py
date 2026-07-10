@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import collections
 import gzip
+import hashlib
 import json
 import re
 import zipfile
@@ -674,7 +675,11 @@ def load_current_definitions(
     safe_words: set[str],
     legacy_source_words: set[str],
 ) -> tuple[dict[str, list[dict[str, str]]], set[str], set[str]]:
-    raw = json.loads(current_json.read_text())
+    if current_json.suffix == ".gz":
+        with gzip.open(current_json, "rt") as source:
+            raw = json.load(source)
+    else:
+        raw = json.loads(current_json.read_text())
     current_playable = {word for word in raw if is_playable(word)}
     definitions: dict[str, list[dict[str, str]]] = collections.defaultdict(list)
     legacy_rescued: set[str] = set()
@@ -1131,20 +1136,19 @@ def write_markdown_report(path: Path, audit: dict) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--current-json", type=Path, default=Path("textropolis-dictionary.json"))
+    parser.add_argument("--current-json", type=Path, default=Path("dictionary.json.gz"))
     parser.add_argument("--wordnet-zip", type=Path, required=True)
     parser.add_argument("--webster-json", type=Path)
     parser.add_argument("--esdb-large-wordlist", type=Path, required=True)
     parser.add_argument("--esdb-default-wordlist", type=Path)
     parser.add_argument("--scowl", type=Path, required=True)
     parser.add_argument("--output-json", type=Path, default=Path("textropolis-dictionary.json"))
-    parser.add_argument("--output-gzip", type=Path, default=Path("textropolis-dictionary.json.gz"))
     parser.add_argument("--wordhunt-output-json", type=Path, default=Path("wordhunt-dictionary.json"))
-    parser.add_argument("--wordhunt-output-gzip", type=Path, default=Path("wordhunt-dictionary.json.gz"))
     parser.add_argument("--wordlist-output-json", type=Path, default=Path("wordlist.json"))
     parser.add_argument("--wordlist-output-gzip", type=Path, default=Path("wordlist.json.gz"))
     parser.add_argument("--dictionary-output-json", type=Path, default=Path("dictionary.json"))
     parser.add_argument("--dictionary-output-gzip", type=Path, default=Path("dictionary.json.gz"))
+    parser.add_argument("--asset-manifest", type=Path, default=Path("word-assets.json"))
     parser.add_argument("--audit-json", type=Path, default=Path("textropolis-dictionary-audit.json"))
     parser.add_argument("--audit-md", type=Path, default=Path("textropolis-dictionary-audit.md"))
     return parser.parse_args()
@@ -1211,7 +1215,9 @@ def main() -> None:
     payload = (json.dumps(final, indent=2, sort_keys=True) + "\n").encode()
     wordhunt_payload = (json.dumps(wordhunt_supplement, indent=2, sort_keys=True) + "\n").encode()
     combined_dictionary = {**final, **wordhunt_supplement}
-    dictionary_payload = (json.dumps(combined_dictionary, indent=2, sort_keys=True) + "\n").encode()
+    dictionary_payload = (
+        json.dumps(combined_dictionary, separators=(",", ":"), sort_keys=True) + "\n"
+    ).encode()
     wordlist_payload = (
         json.dumps(
             {
@@ -1224,23 +1230,34 @@ def main() -> None:
         + "\n"
     ).encode()
     args.output_json.write_bytes(payload)
-    write_gzip(args.output_gzip, payload)
     args.wordhunt_output_json.write_bytes(wordhunt_payload)
-    write_gzip(args.wordhunt_output_gzip, wordhunt_payload)
     args.wordlist_output_json.write_bytes(wordlist_payload)
     write_gzip(args.wordlist_output_gzip, wordlist_payload)
     args.dictionary_output_json.write_bytes(dictionary_payload)
     write_gzip(args.dictionary_output_gzip, dictionary_payload)
+    wordlist_hash = hashlib.sha256(args.wordlist_output_gzip.read_bytes()).hexdigest()[:16]
+    dictionary_hash = hashlib.sha256(args.dictionary_output_gzip.read_bytes()).hexdigest()[:16]
+    args.asset_manifest.write_text(
+        json.dumps(
+            {
+                "version": f"sha256-{wordlist_hash}-{dictionary_hash}",
+                "wordlist": f"/{args.wordlist_output_gzip.name}",
+                "dictionary": f"/{args.dictionary_output_gzip.name}",
+            },
+            indent=2,
+        )
+        + "\n"
+    )
     args.audit_json.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n")
     write_markdown_report(args.audit_md, audit)
 
     summary = audit["summary"]
     print(
-        f"wrote {args.output_json} and {args.output_gzip}: "
+        f"wrote {args.output_json}: "
         f"{summary['new_playable_words']} words, {summary['definition_entries']} definitions"
     )
     print(
-        f"wrote {args.wordhunt_output_json} and {args.wordhunt_output_gzip}: "
+        f"wrote {args.wordhunt_output_json}: "
         f"{summary['wordhunt_supplement_words']} supplemental words, "
         f"{summary['wordhunt_supplement_definition_entries']} definitions"
     )

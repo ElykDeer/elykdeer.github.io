@@ -27,7 +27,9 @@ pub enum GameLaunch {
         cheat: bool,
     },
     #[cfg(debug_assertions)]
-    Snek,
+    Snek {
+        cheat: bool,
+    },
     Textropolis,
     WordHunt {
         reveal: bool,
@@ -46,7 +48,7 @@ impl GameLaunch {
         match self {
             Self::Bubbles { .. } => "bubbles",
             #[cfg(debug_assertions)]
-            Self::Snek => "snek",
+            Self::Snek { .. } => "snek",
             Self::Textropolis => "textropolis",
             Self::WordHunt { .. } => "wordhunt",
         }

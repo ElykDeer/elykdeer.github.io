@@ -68,6 +68,7 @@ fn default_output_path(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal::state::CommandEffect;
     use crate::terminal::TerminalContext;
 
     #[test]
@@ -79,7 +80,9 @@ mod tests {
             .unwrap();
 
         assert!(output.is_empty());
-        let request = ctx.take_fetch_request().unwrap();
+        let Some(CommandEffect::Fetch(request)) = ctx.take_command_effect() else {
+            panic!("expected fetch effect");
+        };
         assert_eq!(request.url, "https://example.com");
         assert_eq!(request.output_path, None);
     }
@@ -95,7 +98,9 @@ mod tests {
             )
             .unwrap();
 
-        let request = ctx.take_fetch_request().unwrap();
+        let Some(CommandEffect::Fetch(request)) = ctx.take_command_effect() else {
+            panic!("expected fetch effect");
+        };
         assert_eq!(request.url, "https://example.com/readme.txt?x=1");
         assert_eq!(request.output_path.as_deref(), Some("readme.txt"));
     }
@@ -115,7 +120,9 @@ mod tests {
             )
             .unwrap();
 
-        let request = ctx.take_fetch_request().unwrap();
+        let Some(CommandEffect::Fetch(request)) = ctx.take_command_effect() else {
+            panic!("expected fetch effect");
+        };
         assert_eq!(request.output_path.as_deref(), Some("saved.txt"));
     }
 }

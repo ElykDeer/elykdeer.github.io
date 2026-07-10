@@ -525,6 +525,12 @@ mod tests {
         state.preview_selection(Coord::new(0, 2));
 
         let saved = SavedProgress::from(&state);
-        assert!(saved.selection.is_none());
+        let json = serde_json::to_string(&saved).unwrap();
+        assert!(!json.contains("selection"));
+    }
+
+    #[test]
+    fn saved_progress_requires_version() {
+        assert!(serde_json::from_str::<SavedProgress>(r#"{"found":{}}"#).is_err());
     }
 }

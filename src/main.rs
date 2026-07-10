@@ -2,7 +2,7 @@ mod app;
 pub mod commands;
 pub mod content;
 pub mod fs;
-pub mod game;
+pub mod games;
 pub mod nano_editor;
 pub mod net;
 pub mod python;
@@ -13,23 +13,13 @@ pub mod terminal;
 use app::App;
 use leptos::prelude::*;
 #[cfg(target_arch = "wasm32")]
-use wasm_bindgen::prelude::*;
-#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
-
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_name = elykRunPostInitialPreloads)]
-    fn run_post_initial_preloads_js();
-}
 
 fn main() {
     console_error_panic_hook::set_once();
     set_stable_app_height();
     leptos::mount::mount_to_body(|| view! { <App /> });
     remove_boot_elements();
-    run_post_initial_preloads();
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -73,11 +63,3 @@ fn remove_boot_elements() {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn remove_boot_elements() {}
-
-#[cfg(target_arch = "wasm32")]
-fn run_post_initial_preloads() {
-    run_post_initial_preloads_js();
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn run_post_initial_preloads() {}

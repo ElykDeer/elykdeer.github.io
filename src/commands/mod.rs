@@ -1,3 +1,4 @@
+use crate::terminal::state::{CommandEffect, CommandExecution};
 use crate::terminal::{parse_command_line, OutputBlock, ParseError, TerminalContext};
 
 pub mod bubbles;
@@ -132,38 +133,58 @@ pub fn find_command<'a>(commands: &'a [Box<dyn Command>], name: &str) -> Option<
 }
 
 pub fn run_line(ctx: &mut TerminalContext, line: &str) -> Vec<OutputBlock> {
+    let mut execution = execute_line(ctx, line);
+    if execution.effect.is_some() {
+        execution.output.push(OutputBlock::Error(
+            "That command requires the top-level terminal executor.".to_string(),
+        ));
+    }
+    execution.output
+}
+
+pub fn execute_line(ctx: &mut TerminalContext, line: &str) -> CommandExecution {
     match parse_command_line(line) {
         Ok(parsed) => run_parsed(ctx, parsed),
-        Err(ParseError::Empty) => Vec::new(),
-        Err(ParseError::TrailingEscape) => {
-            vec![OutputBlock::Error(
-                "Command ended with an unfinished escape.".to_string(),
-            )]
+        Err(ParseError::Empty) => CommandExecution::default(),
+        Err(ParseError::TrailingEscape) => CommandExecution::from_output(vec![OutputBlock::Error(
+            "Command ended with an unfinished escape.".to_string(),
+        )]),
+        Err(ParseError::UnterminatedQuote(quote)) => {
+            CommandExecution::from_output(vec![OutputBlock::Error(format!(
+                "Unterminated {} quote.",
+                quote_name(quote)
+            ))])
         }
-        Err(ParseError::UnterminatedQuote(quote)) => vec![OutputBlock::Error(format!(
-            "Unterminated {} quote.",
-            quote_name(quote)
-        ))],
         Err(ParseError::EmptyPipelineStage) => {
-            vec![OutputBlock::Error("Empty pipeline stage.".to_string())]
+            CommandExecution::from_output(vec![OutputBlock::Error(
+                "Empty pipeline stage.".to_string(),
+            )])
         }
-        Err(ParseError::EmptyRedirectTarget) => vec![OutputBlock::Error(
-            "Output redirection needs exactly one target path.".to_string(),
-        )],
-        Err(ParseError::UnsupportedRedirect) => vec![OutputBlock::Error(
-            "Only simple '>' output redirection to one file is supported.".to_string(),
-        )],
+        Err(ParseError::EmptyRedirectTarget) => {
+            CommandExecution::from_output(vec![OutputBlock::Error(
+                "Output redirection needs exactly one target path.".to_string(),
+            )])
+        }
+        Err(ParseError::UnsupportedRedirect) => {
+            CommandExecution::from_output(vec![OutputBlock::Error(
+                "Only simple '>' output redirection to one file is supported.".to_string(),
+            )])
+        }
     }
 }
 
 pub fn run_parsed(
     ctx: &mut TerminalContext,
     parsed: crate::terminal::ParsedCommand,
-) -> Vec<OutputBlock> {
+) -> CommandExecution {
+    assert!(
+        ctx.take_command_effect().is_none(),
+        "the previous command effect was not consumed"
+    );
     let commands = registry();
     ctx.set_command_metadata(commands.iter().map(|command| command.metadata()).collect());
 
-    match find_command(&commands, &parsed.name) {
+    let output = match find_command(&commands, &parsed.name) {
         Some(command) => match command.run(ctx, &parsed.args) {
             Ok(output) => output,
             Err(err) => vec![OutputBlock::Error(err.message)],
@@ -176,12 +197,14 @@ pub fn run_parsed(
             "Unknown command '{}'. Type 'help' to see available commands.",
             parsed.name
         ))],
-    }
+    };
+
+    CommandExecution::new(output, ctx.take_command_effect())
 }
 
 /// Run a file of shell commands, one per line (blank lines and `#` comments
-/// skipped). Async commands (python3/pip and console scripts) aren't supported
-/// inside a script — their pending requests are dropped so they don't leak.
+/// skipped). Effects requiring the interactive executor are reported and
+/// rejected at the line where they occur.
 pub fn run_script(ctx: &mut TerminalContext, source: &str) -> Vec<OutputBlock> {
     let mut output = Vec::new();
     for line in source.lines() {
@@ -189,14 +212,28 @@ pub fn run_script(ctx: &mut TerminalContext, source: &str) -> Vec<OutputBlock> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        output.extend(run_line(ctx, line));
-        ctx.take_python_requested();
-        ctx.take_pip_request();
-        ctx.take_console_script_request();
-        ctx.take_fetch_request();
-        ctx.take_python_file_request();
+        let execution = execute_line(ctx, line);
+        output.extend(execution.output);
+        if let Some(effect) = execution.effect {
+            output.push(OutputBlock::Error(format!(
+                "sh: {} is not supported in shell scripts.",
+                effect_description(&effect)
+            )));
+        }
     }
     output
+}
+
+fn effect_description(effect: &CommandEffect) -> &'static str {
+    match effect {
+        CommandEffect::Clear => "clear",
+        CommandEffect::EnterPython => "interactive Python",
+        CommandEffect::PipInstall(_) => "a pip installation",
+        CommandEffect::ConsoleScript(_) => "a package console script",
+        CommandEffect::Fetch(_) => "a network request",
+        CommandEffect::PythonFile(_) => "Python file execution",
+        CommandEffect::ConsolePipe(_) => "an async pipeline",
+    }
 }
 
 fn quote_name(quote: char) -> &'static str {
@@ -343,17 +380,37 @@ mod tests {
         );
         ctx.sync_profile_from_runtime();
 
-        let output = run_line(&mut ctx, "lolcat --seed 3 hello");
+        let execution = execute_line(&mut ctx, "lolcat --seed 3 hello");
 
-        assert!(output.is_empty());
+        assert!(execution.output.is_empty());
         assert_eq!(
-            ctx.take_console_script_request(),
-            Some(crate::terminal::ConsoleScriptInvocation {
-                name: "lolcat".to_string(),
-                args: vec!["--seed".to_string(), "3".to_string(), "hello".to_string()],
-                stdin: None,
-            })
+            execution.effect,
+            Some(CommandEffect::ConsoleScript(
+                crate::terminal::ConsoleScriptInvocation {
+                    name: "lolcat".to_string(),
+                    args: vec!["--seed".to_string(), "3".to_string(), "hello".to_string()],
+                    stdin: None,
+                }
+            ))
         );
+    }
+
+    #[test]
+    fn shell_script_reports_and_consumes_async_effects() {
+        let mut ctx = TerminalContext::new();
+
+        let output = run_script(&mut ctx, "curl https://example.com\necho still-running");
+
+        assert_eq!(
+            output,
+            vec![
+                OutputBlock::Error(
+                    "sh: a network request is not supported in shell scripts.".to_string()
+                ),
+                OutputBlock::Text("still-running".to_string()),
+            ]
+        );
+        assert_eq!(ctx.take_command_effect(), None);
     }
 
     #[test]
@@ -520,6 +577,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn bubbles_version_reports_game_version() {
+        let mut ctx = TerminalContext::new();
+
+        assert_eq!(
+            run_line(&mut ctx, "bubbles version"),
+            vec![OutputBlock::Text("Bubbles 2.x".to_string())]
+        );
+    }
+
     #[cfg(debug_assertions)]
     #[test]
     fn bubbles_cheat_launches_debug_cheat_mode() {
@@ -548,7 +615,18 @@ mod tests {
 
         assert_eq!(
             run_line(&mut ctx, "snek"),
-            vec![OutputBlock::LaunchGame(GameLaunch::Snek)]
+            vec![OutputBlock::LaunchGame(GameLaunch::Snek { cheat: false })]
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn snek_cheat_launches_debug_cheat_mode() {
+        let mut ctx = TerminalContext::new();
+
+        assert_eq!(
+            run_line(&mut ctx, "snek cheat"),
+            vec![OutputBlock::LaunchGame(GameLaunch::Snek { cheat: true })]
         );
     }
 
@@ -563,6 +641,17 @@ mod tests {
         );
     }
 
+    #[cfg(debug_assertions)]
+    #[test]
+    fn snek_version_reports_game_version() {
+        let mut ctx = TerminalContext::new();
+
+        assert_eq!(
+            run_line(&mut ctx, "snek version"),
+            vec![OutputBlock::Text("Snek 0.x".to_string())]
+        );
+    }
+
     #[test]
     fn textropolis_launches_game() {
         let mut ctx = TerminalContext::new();
@@ -570,6 +659,16 @@ mod tests {
         assert_eq!(
             run_line(&mut ctx, "textropolis"),
             vec![OutputBlock::LaunchGame(GameLaunch::Textropolis)]
+        );
+    }
+
+    #[test]
+    fn textropolis_version_reports_game_version() {
+        let mut ctx = TerminalContext::new();
+
+        assert_eq!(
+            run_line(&mut ctx, "textropolis version"),
+            vec![OutputBlock::Text("Textropolis 1.x".to_string())]
         );
     }
 
@@ -583,6 +682,16 @@ mod tests {
                 reveal: false,
                 board: None,
             })]
+        );
+    }
+
+    #[test]
+    fn wordhunt_version_reports_game_version() {
+        let mut ctx = TerminalContext::new();
+
+        assert_eq!(
+            run_line(&mut ctx, "wordhunt version"),
+            vec![OutputBlock::Text("Word Hunt 1.x".to_string())]
         );
     }
 

@@ -245,14 +245,21 @@
       // any legacy localStorage value over.
       const ELYK_DB = "elyk";
       const ELYK_STORE = "kv";
+      let _elykDb = null;
 
       function _elykOpenDb() {
-        return new Promise((resolve, reject) => {
-          const req = indexedDB.open(ELYK_DB, 1);
-          req.onupgradeneeded = () => req.result.createObjectStore(ELYK_STORE);
-          req.onsuccess = () => resolve(req.result);
-          req.onerror = () => reject(req.error);
-        });
+        if (!_elykDb) {
+          _elykDb = new Promise((resolve, reject) => {
+            const req = indexedDB.open(ELYK_DB, 1);
+            req.onupgradeneeded = () => req.result.createObjectStore(ELYK_STORE);
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+          }).catch((err) => {
+            _elykDb = null;
+            throw err;
+          });
+        }
+        return _elykDb;
       }
 
       window.elykStorageGet = async function (key) {
@@ -331,13 +338,13 @@
       };
 
       const ELYK_DEFAULT_WORD_ASSETS = {
-        version: "word-assets-2026-07-08-scoped",
+        version: "sha256-1b18b0b6b7a726a1-22e675f15226a908",
         wordlist: "/wordlist.json.gz",
         dictionary: "/dictionary.json.gz",
       };
       let _wordAssetManifest = null;
       let _wordList = null;
-      let _fullDictionary = null;
+      const _fullDictionaries = new Map();
       const _compressedAssetLoads = new Map();
       let _dictionaryStatus = {
         state: "idle",
@@ -374,19 +381,12 @@
         return {
           url,
           fetchUrl: _elykVersionedAssetUrl(url, assets.version),
-          compressedCacheKey: `elyk.asset.${assets.version}.${url}.gzip`,
+          loadKey: `${assets.version}:${url}`,
         };
       }
 
-      function _elykByteLength(value) {
-        if (value instanceof ArrayBuffer) return value.byteLength;
-        if (ArrayBuffer.isView(value)) return value.byteLength;
-        if (value instanceof Blob) return value.size;
-        return 0;
-      }
-
       async function _elykFetchGzipBytes(url, label, status) {
-        const response = await fetch(url);
+        const response = await fetch(url, { cache: "force-cache" });
         if (!response.ok) {
           throw new Error(`HTTP ${response.status} ${response.statusText}`);
         }
@@ -430,44 +430,22 @@
 
       async function _elykLoadCompressedGzipAsset(assetName, label, status) {
         const info = await _elykAssetInfo(assetName);
-        const cached = await window.elykStorageGet(info.compressedCacheKey).catch(() => null);
-        if (cached !== null && _elykByteLength(cached) > 0) {
-          if (status) {
-            const bytes = _elykByteLength(cached);
-            status.state = "loading";
-            status.loaded = bytes;
-            status.total = bytes;
-            status.percent = null;
-          }
-          return cached;
-        }
-
-        if (_compressedAssetLoads.has(info.compressedCacheKey)) {
+        if (_compressedAssetLoads.has(info.loadKey)) {
           if (status) {
             status.state = "loading";
             status.loaded = 0;
             status.total = 0;
             status.percent = null;
           }
-          return _compressedAssetLoads.get(info.compressedCacheKey);
+          return _compressedAssetLoads.get(info.loadKey);
         }
 
         const load = _elykFetchGzipBytes(info.fetchUrl, label, status)
-          .then(async (compressed) => {
-            await window.elykStorageSet(info.compressedCacheKey, compressed).catch((err) => {
-              console.warn(`[assets] could not cache compressed ${label}:`, err);
-            });
-            return compressed;
-          })
           .finally(() => {
-            _compressedAssetLoads.delete(info.compressedCacheKey);
+            _compressedAssetLoads.delete(info.loadKey);
           });
-        _compressedAssetLoads.set(info.compressedCacheKey, load);
+        _compressedAssetLoads.set(info.loadKey, load);
         return load;
-      }
-
-      async function _elykWarmCachedGzip(assetName, label) {
-        await _elykLoadCompressedGzipAsset(assetName, label);
       }
 
       async function _elykLoadCachedGzipText(assetName, label, status) {
@@ -477,79 +455,40 @@
 
       window.elykLoadWordList = function () {
         if (!_wordList) {
-          _wordList = _elykLoadCachedGzipText("wordlist", "word list");
+          _wordList = _elykLoadCachedGzipText("wordlist", "word list")
+            .catch((err) => {
+              _wordList = null;
+              throw err;
+            });
         }
         return _wordList;
       };
 
-      window.elykLoadFullDictionary = function () {
-        if (!_fullDictionary) {
-          _fullDictionary = _elykLoadCachedGzipText(
-            "dictionary",
-            "dictionary",
-            _dictionaryStatus
-          ).catch((err) => {
-            _dictionaryStatus.state = "failed";
-            throw err;
-          });
-        }
-        return _fullDictionary;
-      };
-
-      window.elykWarmWordList = function () {
-        return _elykWarmCachedGzip("wordlist", "word list");
-      };
-
-      window.elykWarmFullDictionary = function () {
-        return _elykWarmCachedGzip("dictionary", "dictionary");
-      };
-
-      window.elykPreloadFullDictionary = function () {
-        window.elykLoadFullDictionary().catch((err) => {
-          console.warn("[dictionary] preload failed:", err);
-        });
-      };
-
-      window.elykRunPostInitialPreloads = function () {
-        const tasks = [
-          {
-            name: "word list",
-            run: () => window.elykWarmWordList(),
-          },
-          {
-            name: "dictionary",
-            run: () => window.elykWarmFullDictionary(),
-          },
-        ];
-        let index = 0;
-        const schedule = (callback, timeout) => {
-          if ("requestIdleCallback" in window) {
-            window.requestIdleCallback(callback, { timeout });
-          } else {
-            window.setTimeout(callback, timeout);
-          }
-        };
-        const runNext = () => {
-          const task = tasks[index++];
-          if (!task) return;
-          task
-            .run()
+      function _elykLoadDictionary(assetName, label) {
+        if (!_fullDictionaries.has(assetName)) {
+          _dictionaryStatus = { state: "idle", loaded: 0, total: 0, percent: null };
+          const load = _elykLoadCachedGzipText(assetName, label, _dictionaryStatus)
             .catch((err) => {
-              console.warn(`[preload] ${task.name} failed:`, err);
-            })
-            .finally(() => {
-              schedule(runNext, 1600);
+              _fullDictionaries.delete(assetName);
+              _dictionaryStatus.state = "failed";
+              throw err;
             });
-        };
-        schedule(runNext, 350);
+          _fullDictionaries.set(assetName, load);
+        }
+        return _fullDictionaries.get(assetName);
+      }
+
+      window.elykLoadTextropolisDictionary = function () {
+        return _elykLoadDictionary("dictionary", "dictionary");
+      };
+
+      window.elykLoadWordHuntDictionary = function () {
+        return _elykLoadDictionary("dictionary", "dictionary");
       };
 
       window.elykDictionaryLoadStatus = function () {
         return JSON.stringify(_dictionaryStatus);
       };
-
-      window.elykLoadTextropolisDictionary = window.elykLoadFullDictionary;
-      window.elykLoadWordHuntDictionary = window.elykLoadFullDictionary;
 
       (() => {
         let dragging = false;

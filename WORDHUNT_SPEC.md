@@ -2,7 +2,7 @@
 
 ## Goal
 
-Word Hunt is a full-screen, terminal-launched classic word-search game that loads `textropolis-dictionary.json.gz` plus a de-duplicated `wordhunt-dictionary.json.gz` supplement. It should feel relaxed, polished, keyboard-friendly, touch-friendly, and playable for as long as the player wants.
+Word Hunt is a full-screen, terminal-launched classic word-search game backed by the shared `dictionary.json.gz` word data. It should feel relaxed, polished, keyboard-friendly, touch-friendly, and playable for as long as the player wants.
 
 This is not a Boggle-style anagram game. There are no timers, daily boards, named modes, points, scores, ranks, streaks, or leaderboards.
 
@@ -97,7 +97,7 @@ This is not a Boggle-style anagram game. There are no timers, daily boards, name
 
 ## Persistence
 
-- Useful persistence only: save the last random board, board size, all answer placements, found words, revealed words, and active selection if practical.
+- Useful persistence only: save the last random board, board size, all answer placements, found words, and revealed words. Partial selections are transient.
 - No stats, streaks, bests, scores, dates, or history.
 - Local storage key: `elyk.wordhunt.progress.v1`.
 - Site backup/export should include the Word Hunt storage key.
@@ -118,12 +118,12 @@ This is not a Boggle-style anagram game. There are no timers, daily boards, name
 
 ## Implementation Shape
 
-- Add `src/game/wordhunt/{data,state,storage,view}.rs`.
+- Add `src/games/wordhunt/{data,state,storage,view}.rs`.
 - Add `src/commands/wordhunt.rs`.
 - Register the command in `src/commands/mod.rs`.
-- Export `WordHuntGame` from `src/game/mod.rs`.
+- Export `WordHuntGame` from `src/games/mod.rs`.
 - Launch via `GameLaunch::WordHunt` and render through `GameLaunchView`.
-- Load the existing gzipped Textropolis dictionary plus the gzipped Word Hunt supplement.
+- Load the shared word list for board generation and demand-load the combined dictionary for definitions.
 - Add the Word Hunt localStorage key to site backup/export.
 - Treat the dictionary as both a seed-word pool and a validator for every straight-line 4+ word that appears in the final grid.
 - Use DOM buttons for cells, not canvas.

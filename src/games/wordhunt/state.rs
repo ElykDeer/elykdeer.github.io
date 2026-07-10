@@ -24,6 +24,7 @@ const MAX_SEED_WORD_LEN: usize = 32;
 const MAX_GENERATION_ROUNDS: usize = 30;
 const WORD_PLACEMENT_TRIES: usize = 120;
 const SHORT_SEED_LENGTH_WEIGHTS: [(usize, usize); 5] = [(4, 0), (5, 6), (6, 8), (7, 4), (8, 2)];
+const WORDHUNT_SAVE_VERSION: u8 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct BoardShape {
@@ -84,8 +85,6 @@ pub(super) struct BoardWord {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub(super) struct Puzzle {
     #[serde(default)]
-    pub(super) size: usize,
-    #[serde(default)]
     pub(super) rows: usize,
     #[serde(default)]
     pub(super) cols: usize,
@@ -95,24 +94,17 @@ pub(super) struct Puzzle {
 
 impl Puzzle {
     pub(super) fn rows(&self) -> usize {
-        if self.rows == 0 {
-            self.size
-        } else {
-            self.rows
-        }
+        self.rows
     }
 
     pub(super) fn cols(&self) -> usize {
-        if self.cols == 0 {
-            self.size
-        } else {
-            self.cols
-        }
+        self.cols
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub(super) struct SavedProgress {
+    pub(super) version: u8,
     pub(super) puzzle: Option<Puzzle>,
     #[serde(default)]
     pub(super) found: BTreeMap<String, Vec<Coord>>,
@@ -120,8 +112,18 @@ pub(super) struct SavedProgress {
     pub(super) revealed: BTreeMap<String, Vec<Coord>>,
     #[serde(default)]
     pub(super) subwords: BTreeMap<String, Vec<Coord>>,
-    #[serde(default)]
-    pub(super) selection: Option<Selection>,
+}
+
+impl Default for SavedProgress {
+    fn default() -> Self {
+        Self {
+            version: WORDHUNT_SAVE_VERSION,
+            puzzle: None,
+            found: BTreeMap::new(),
+            revealed: BTreeMap::new(),
+            subwords: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -193,6 +195,7 @@ impl SavedProgress {
     fn load_existing(data: &WordHuntData) -> Option<Self> {
         load_saved_progress()
             .and_then(|json| serde_json::from_str::<SavedProgress>(&json).ok())
+            .filter(|progress| progress.version == WORDHUNT_SAVE_VERSION)
             .and_then(|progress| progress.validated(data))
     }
 
@@ -211,7 +214,6 @@ impl SavedProgress {
             .retain(|word, path| words.contains(word) && path_belongs_to_word(&puzzle, word, path));
         self.subwords
             .retain(|word, path| subword_belongs_to_puzzle(data, &puzzle, word, path));
-        self.selection = None;
         self.puzzle = Some(puzzle);
         Some(self)
     }
@@ -220,11 +222,11 @@ impl SavedProgress {
 impl From<&WordHuntState> for SavedProgress {
     fn from(state: &WordHuntState) -> Self {
         Self {
+            version: WORDHUNT_SAVE_VERSION,
             puzzle: Some(state.puzzle.clone()),
             found: state.found.clone(),
             revealed: state.revealed.clone(),
             subwords: state.subwords.clone(),
-            selection: None,
         }
     }
 }
@@ -241,7 +243,7 @@ impl WordHuntState {
             found: progress.found,
             revealed: progress.revealed,
             subwords: progress.subwords,
-            selection: progress.selection,
+            selection: None,
         }
     }
 
@@ -256,7 +258,7 @@ impl WordHuntState {
             found: progress.found,
             revealed: progress.revealed,
             subwords: progress.subwords,
-            selection: progress.selection,
+            selection: None,
         })
     }
 
@@ -848,7 +850,6 @@ fn solve_rows(data: &WordHuntData, rows: Vec<String>) -> Puzzle {
     remove_strict_subset_paths(&mut words);
 
     Puzzle {
-        size: row_count.max(col_count),
         rows: row_count,
         cols: col_count,
         board: rows,
@@ -859,7 +860,7 @@ fn solve_rows(data: &WordHuntData, rows: Vec<String>) -> Puzzle {
 fn validate_puzzle(data: &WordHuntData, puzzle: Puzzle) -> Option<Puzzle> {
     let rows = puzzle.rows();
     let cols = puzzle.cols();
-    if rows < 4 || cols < 4 || puzzle.board.len() != rows {
+    if rows < MIN_BOARD_SIDE || cols < MIN_BOARD_SIDE || puzzle.board.len() != rows {
         return None;
     }
     if puzzle
@@ -874,6 +875,38 @@ fn validate_puzzle(data: &WordHuntData, puzzle: Puzzle) -> Option<Puzzle> {
         return None;
     }
     Some(solved)
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::games::word_data::Definition;
+
+    #[test]
+    fn rejects_saved_boards_smaller_than_the_current_minimum() {
+        let data = WordHuntData::from_definitions(HashMap::from([(
+            "able".to_string(),
+            vec![Definition {
+                definition: "capable".to_string(),
+                part_of_speech: "adjective".to_string(),
+            }],
+        )]));
+        let puzzle = Puzzle {
+            rows: 4,
+            cols: 4,
+            board: vec![
+                "ABLE".to_string(),
+                "XXXX".to_string(),
+                "XXXX".to_string(),
+                "XXXX".to_string(),
+            ],
+            words: Vec::new(),
+        };
+
+        assert!(validate_puzzle(&data, puzzle).is_none());
+    }
 }
 
 fn path_belongs_to_word(puzzle: &Puzzle, word: &str, path: &[Coord]) -> bool {

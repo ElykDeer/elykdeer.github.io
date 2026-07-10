@@ -40,7 +40,7 @@ const SWIPE_THRESHOLD: f64 = 18.0;
 
 #[cfg(target_arch = "wasm32")]
 #[component]
-pub fn SnekGame() -> impl IntoView {
+pub fn SnekGame(#[prop(default = false)] _cheat: bool) -> impl IntoView {
     let canvas_ref = NodeRef::<Canvas>::new();
     let runner = Rc::new(RefCell::new(SnekRunner::new()));
     let status_text = RwSignal::new(runner.borrow().status_text());
@@ -171,7 +171,7 @@ pub fn SnekGame() -> impl IntoView {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[component]
-pub fn SnekGame() -> impl IntoView {
+pub fn SnekGame(#[prop(default = false)] _cheat: bool) -> impl IntoView {
     view! {
         <section class="terminal-game">
             <div class="terminal-game-header">

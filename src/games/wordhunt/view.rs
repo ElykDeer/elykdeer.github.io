@@ -6,8 +6,6 @@ use std::sync::Arc;
 use leptos::html::{Div, Section};
 use leptos::prelude::*;
 #[cfg(target_arch = "wasm32")]
-use wasm_bindgen::closure::Closure;
-#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
@@ -15,6 +13,8 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::{spawn_local, JsFuture};
 use web_sys::{KeyboardEvent, MouseEvent, PointerEvent};
 
+#[cfg(target_arch = "wasm32")]
+use super::super::word_data::parse_definitions;
 use super::data::Definition;
 #[cfg(target_arch = "wasm32")]
 use super::data::WordHuntData;
@@ -85,7 +85,7 @@ extern "C" {
     #[wasm_bindgen(js_name = elykLoadWordList)]
     fn load_word_list_js() -> js_sys::Promise;
 
-    #[wasm_bindgen(js_name = elykLoadFullDictionary)]
+    #[wasm_bindgen(js_name = elykLoadWordHuntDictionary)]
     fn load_full_dictionary_js() -> js_sys::Promise;
 
     #[wasm_bindgen(js_name = elykDictionaryLoadStatus)]
@@ -111,7 +111,7 @@ async fn load_wordhunt_definitions() -> Result<HashMap<String, Vec<Definition>>,
     let json = value
         .as_string()
         .ok_or_else(|| "dictionary loader returned a non-string value".to_string())?;
-    serde_json::from_str(&json).map_err(|err| err.to_string())
+    parse_definitions(&json)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -177,6 +177,7 @@ fn start_dictionary_load(
                 }
             }
             Err(err) => {
+                dictionary_started.set(false);
                 dictionary_loading.set(false);
                 if dictionary_pending_open.get_untracked() {
                     feedback.set(format!("Dictionary failed: {err}"));
@@ -185,22 +186,6 @@ fn start_dictionary_load(
             }
         }
     });
-}
-
-#[cfg(target_arch = "wasm32")]
-fn schedule_deferred_dictionary_load(start: impl FnOnce() + 'static) {
-    let Some(window) = web_sys::window() else {
-        start();
-        return;
-    };
-    let callback = Closure::once(start);
-    let result = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-        callback.as_ref().unchecked_ref(),
-        900,
-    );
-    if result.is_ok() {
-        callback.forget();
-    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -569,17 +554,6 @@ pub fn WordHuntGame(
                     save_progress(&state);
                 }
                 load.set(DictionaryLoad::Ready(state));
-                schedule_deferred_dictionary_load(move || {
-                    start_dictionary_load(
-                        load,
-                        dictionary_started,
-                        dictionary_loading,
-                        dictionary_pending_open,
-                        word_dialog_open,
-                        feedback,
-                        feedback_tone,
-                    );
-                });
             }
             Err(err) => load.set(DictionaryLoad::Failed(err)),
         }

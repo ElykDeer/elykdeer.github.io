@@ -3,6 +3,8 @@ use crate::terminal::{GameLaunch, OutputBlock, TerminalContext};
 
 pub struct BubblesCommand;
 
+const BUBBLES_VERSION: &str = "2.x";
+
 impl Command for BubblesCommand {
     fn name(&self) -> &'static str {
         "bubbles"
@@ -14,17 +16,22 @@ impl Command for BubblesCommand {
 
     fn long_help(&self) -> &'static str {
         if cfg!(debug_assertions) {
-            "Usage: bubbles [hard] [cheat] | bubbles clear\n\nLaunches the in-terminal bubbles game. Aim with mouse, touch, or arrow keys; \
-shoot with click, tap, Space, or Enter. `bubbles hard` starts hard mode. `bubbles cheat` enables debug-only cheat buttons. `bubbles clear` resets your saved high score and saved games."
+            "Usage: bubbles [hard] [cheat] | bubbles clear | bubbles version\n\nLaunches the in-terminal bubbles game. Aim with mouse, touch, or arrow keys; \
+shoot with click, tap, Space, or Enter. `bubbles hard` starts hard mode. `bubbles cheat` enables debug-only cheat buttons. `bubbles clear` resets your saved high score and saved games. `bubbles version` prints the game version."
         } else {
-            "Usage: bubbles [hard|clear]\n\nLaunches the in-terminal bubbles game. Aim with mouse, touch, or arrow keys; \
-shoot with click, tap, Space, or Enter. `bubbles hard` starts hard mode. `bubbles clear` resets your saved high score and saved games."
+            "Usage: bubbles [hard] | bubbles clear | bubbles version\n\nLaunches the in-terminal bubbles game. Aim with mouse, touch, or arrow keys; \
+shoot with click, tap, Space, or Enter. `bubbles hard` starts hard mode. `bubbles clear` resets your saved high score and saved games. `bubbles version` prints the game version."
         }
     }
 
     fn run(&self, _ctx: &mut TerminalContext, args: &[String]) -> CommandResult {
+        if matches!(args, [arg] if arg == "version") {
+            return Ok(vec![OutputBlock::Text(format!(
+                "Bubbles {BUBBLES_VERSION}"
+            ))]);
+        }
         if matches!(args, [arg] if arg == "clear") {
-            crate::game::clear_high_score();
+            crate::games::clear_high_score();
             return Ok(vec![OutputBlock::Text(
                 "High score and saved games cleared.".to_string(),
             )]);
@@ -53,8 +60,8 @@ shoot with click, tap, Space, or Enter. `bubbles hard` starts hard mode. `bubble
 
 fn bubbles_usage() -> &'static str {
     if cfg!(debug_assertions) {
-        "Usage: bubbles [hard] [cheat] | bubbles clear"
+        "Usage: bubbles [hard] [cheat] | bubbles clear | bubbles version"
     } else {
-        "Usage: bubbles [hard|clear]"
+        "Usage: bubbles [hard] | bubbles clear | bubbles version"
     }
 }

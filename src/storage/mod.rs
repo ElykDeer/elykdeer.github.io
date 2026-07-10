@@ -9,11 +9,13 @@ use crate::fs::UserOverlay;
 pub const PROFILE_STORAGE_KEY: &str = "elyk.profile.v1";
 pub const CURRENT_PROFILE_VERSION: u32 = 1;
 pub const CURRENT_BACKUP_VERSION: u32 = 1;
-pub const BACKUP_STORAGE_KEYS: [&str; 6] = [
+pub const BACKUP_STORAGE_KEYS: &[&str] = &[
     "elyk.bubbles.high-score",
     "elyk.bubbles.save.normal",
     "elyk.bubbles.save.hard",
     "elyk.bubbles.progress.v1",
+    #[cfg(debug_assertions)]
+    "elyk.snek.save.v3",
     "elyk.textropolis.progress.v1",
     "elyk.wordhunt.progress.v1",
 ];
@@ -288,6 +290,10 @@ mod tests {
                 "elyk.textropolis.progress.v1".to_string(),
                 r#"{"guessed":{}}"#.to_string(),
             ),
+            (
+                "elyk.snek.save.v3".to_string(),
+                r#"{"version":2}"#.to_string(),
+            ),
             ("unknown".to_string(), "ignored".to_string()),
         ]);
 
@@ -295,10 +301,13 @@ mod tests {
         let imported = import_site_backup_json(&exported).unwrap();
 
         assert_eq!(imported.profile, profile);
-        assert_eq!(imported.local_storage.len(), 1);
+        let expected_storage_keys = if cfg!(debug_assertions) { 2 } else { 1 };
+        assert_eq!(imported.local_storage.len(), expected_storage_keys);
         assert!(imported
             .local_storage
             .contains_key("elyk.textropolis.progress.v1"));
+        #[cfg(debug_assertions)]
+        assert!(imported.local_storage.contains_key("elyk.snek.save.v3"));
     }
 
     #[test]

@@ -11,6 +11,8 @@ use wasm_bindgen::prelude::*;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::{spawn_local, JsFuture};
 
+#[cfg(target_arch = "wasm32")]
+use super::super::word_data::parse_definitions;
 use super::data::Definition;
 #[cfg(target_arch = "wasm32")]
 use super::data::TextropolisData;
@@ -99,7 +101,6 @@ struct WordListEntry {
 struct PendingDefinitionRequest {
     word: String,
     kind: FlyingDefinitionKind,
-    record_city: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -169,7 +170,7 @@ extern "C" {
     #[wasm_bindgen(js_name = elykLoadWordList)]
     fn load_word_list_js() -> js_sys::Promise;
 
-    #[wasm_bindgen(js_name = elykLoadFullDictionary)]
+    #[wasm_bindgen(js_name = elykLoadTextropolisDictionary)]
     fn load_full_dictionary_js() -> js_sys::Promise;
 
     #[wasm_bindgen(js_name = elykDictionaryLoadStatus)]
@@ -195,7 +196,7 @@ async fn load_textropolis_definitions() -> Result<HashMap<String, Vec<Definition
     let json = value
         .as_string()
         .ok_or_else(|| "dictionary loader returned a non-string value".to_string())?;
-    serde_json::from_str(&json).map_err(|err| err.to_string())
+    parse_definitions(&json)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -843,7 +844,6 @@ pub fn TextropolisGame() -> impl IntoView {
                             let pending_requests = pending_definition.get_untracked();
                             if !pending_requests.is_empty() {
                                 pending_definition.set(Vec::new());
-                                let mut accepted_feedback = None::<String>;
                                 let entries = load.with_untracked(|load| match load {
                                     DictionaryLoad::Ready(state) => Some(
                                         pending_requests
@@ -864,27 +864,6 @@ pub fn TextropolisGame() -> impl IntoView {
                                             entries.map(|entries| (request, entries))
                                         })
                                     {
-                                        if let Some(city) = request.record_city.as_deref() {
-                                            let word = request.word.clone();
-                                            let mut recorded = false;
-                                            load.update(|load| {
-                                                if let DictionaryLoad::Ready(state) = load {
-                                                    recorded =
-                                                        state.record_accepted_for_city(city, &word);
-                                                    if recorded {
-                                                        save_progress(state);
-                                                    }
-                                                }
-                                            });
-                                            if recorded {
-                                                accepted_feedback = Some(format!(
-                                                    "+{}",
-                                                    format_people(
-                                                        TextropolisState::word_population(&word)
-                                                    )
-                                                ));
-                                            }
-                                        }
                                         queue_definitions(
                                             &definitions,
                                             &next_banner_id,
@@ -894,14 +873,8 @@ pub fn TextropolisGame() -> impl IntoView {
                                             true,
                                         );
                                     }
-                                    if let Some(message) = accepted_feedback {
-                                        feedback.set(message);
-                                        feedback_tone.set(FeedbackTone::Good);
-                                        feedback_tick.update(|tick| *tick = tick.wrapping_add(1));
-                                    } else {
-                                        feedback.set(String::new());
-                                        feedback_tone.set(FeedbackTone::Neutral);
-                                    }
+                                    feedback.set(String::new());
+                                    feedback_tone.set(FeedbackTone::Neutral);
                                 }
                             }
                         }
@@ -958,21 +931,21 @@ pub fn TextropolisGame() -> impl IntoView {
             |load| matches!(load, DictionaryLoad::Ready(state) if state.definitions_loaded()),
         );
         if let Some((word, entries, should_record)) = definition_source {
-            if !definitions_ready {
-                let record_city = should_record.then(|| {
-                    load.with_untracked(|load| match load {
-                        DictionaryLoad::Ready(state) => state
-                            .current_city_index()
-                            .map(|index| state.city_name(index).to_string()),
-                        _ => None,
-                    })
+            if should_record {
+                load.update(|load| {
+                    if let DictionaryLoad::Ready(state) = load {
+                        state.record_accepted(word);
+                        save_progress(state);
+                        state.clear_selection();
+                    }
                 });
+            }
+            if !definitions_ready {
                 queue_pending_definition(
                     &pending_definition,
                     PendingDefinitionRequest {
                         word: word.clone(),
                         kind: FlyingDefinitionKind::Definition,
-                        record_city: record_city.flatten(),
                     },
                 );
                 feedback.set(dictionary_waiting_message());
@@ -980,15 +953,6 @@ pub fn TextropolisGame() -> impl IntoView {
                 feedback_tick.update(|tick| *tick = tick.wrapping_add(1));
                 return;
             }
-            load.update(|load| {
-                if let DictionaryLoad::Ready(state) = load {
-                    if should_record {
-                        state.record_accepted(word);
-                        save_progress(state);
-                        state.clear_selection();
-                    }
-                }
-            });
             queue_definitions(
                 &definitions,
                 &next_banner_id,
@@ -1083,7 +1047,6 @@ pub fn TextropolisGame() -> impl IntoView {
                     PendingDefinitionRequest {
                         word: word.clone(),
                         kind: FlyingDefinitionKind::Definition,
-                        record_city: None,
                     },
                 );
                 feedback.set(dictionary_waiting_message());
@@ -1109,7 +1072,6 @@ pub fn TextropolisGame() -> impl IntoView {
                     PendingDefinitionRequest {
                         word: word.clone(),
                         kind: FlyingDefinitionKind::Definition,
-                        record_city: None,
                     },
                 );
                 feedback.set(dictionary_waiting_message());
@@ -1138,7 +1100,6 @@ pub fn TextropolisGame() -> impl IntoView {
                     PendingDefinitionRequest {
                         word: word.clone(),
                         kind: FlyingDefinitionKind::Hint,
-                        record_city: None,
                     },
                 );
                 feedback.set(dictionary_waiting_message());
@@ -1229,7 +1190,6 @@ pub fn TextropolisGame() -> impl IntoView {
                     PendingDefinitionRequest {
                         word: word.clone(),
                         kind: FlyingDefinitionKind::Hint,
-                        record_city: None,
                     },
                 );
                 feedback.set(dictionary_waiting_message());

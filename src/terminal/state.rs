@@ -41,20 +41,41 @@ pub struct ConsolePipe {
     pub consumer: crate::terminal::ParsedCommand,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommandEffect {
+    Clear,
+    EnterPython,
+    PipInstall(Vec<String>),
+    ConsoleScript(ConsoleScriptInvocation),
+    Fetch(FetchInvocation),
+    PythonFile(PythonFileInvocation),
+    ConsolePipe(ConsolePipe),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommandExecution {
+    pub output: Vec<crate::terminal::OutputBlock>,
+    pub effect: Option<CommandEffect>,
+}
+
+impl CommandExecution {
+    pub fn new(output: Vec<crate::terminal::OutputBlock>, effect: Option<CommandEffect>) -> Self {
+        Self { output, effect }
+    }
+
+    pub fn from_output(output: Vec<crate::terminal::OutputBlock>) -> Self {
+        Self::new(output, None)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct TerminalContext {
     cwd: String,
     profile: ProfileV1,
     vfs: VirtualFileSystem,
     command_metadata: Vec<CommandMetadata>,
-    clear_requested: bool,
-    python_requested: bool,
-    pip_request: Option<Vec<String>>,
-    console_script_request: Option<ConsoleScriptInvocation>,
-    fetch_request: Option<FetchInvocation>,
+    command_effect: Option<CommandEffect>,
     stdin: Option<String>,
-    python_file_request: Option<PythonFileInvocation>,
-    console_pipe_request: Option<ConsolePipe>,
 }
 
 impl Default for TerminalContext {
@@ -66,14 +87,8 @@ impl Default for TerminalContext {
             profile,
             vfs,
             command_metadata: Vec::new(),
-            clear_requested: false,
-            python_requested: false,
-            pip_request: None,
-            console_script_request: None,
-            fetch_request: None,
+            command_effect: None,
             stdin: None,
-            python_file_request: None,
-            console_pipe_request: None,
         }
     }
 }
@@ -91,14 +106,8 @@ impl TerminalContext {
             profile,
             vfs,
             command_metadata: Vec::new(),
-            clear_requested: false,
-            python_requested: false,
-            pip_request: None,
-            console_script_request: None,
-            fetch_request: None,
+            command_effect: None,
             stdin: None,
-            python_file_request: None,
-            console_pipe_request: None,
         })
     }
 
@@ -176,31 +185,15 @@ impl TerminalContext {
     }
 
     pub fn request_clear(&mut self) {
-        self.clear_requested = true;
-    }
-
-    pub fn take_clear_requested(&mut self) -> bool {
-        let requested = self.clear_requested;
-        self.clear_requested = false;
-        requested
+        self.request_effect(CommandEffect::Clear);
     }
 
     pub fn request_python(&mut self) {
-        self.python_requested = true;
-    }
-
-    pub fn take_python_requested(&mut self) -> bool {
-        let requested = self.python_requested;
-        self.python_requested = false;
-        requested
+        self.request_effect(CommandEffect::EnterPython);
     }
 
     pub fn request_pip(&mut self, packages: Vec<String>) {
-        self.pip_request = Some(packages);
-    }
-
-    pub fn take_pip_request(&mut self) -> Option<Vec<String>> {
-        self.pip_request.take()
+        self.request_effect(CommandEffect::PipInstall(packages));
     }
 
     pub fn console_script_names(&self) -> Vec<String> {
@@ -219,23 +212,20 @@ impl TerminalContext {
         args: Vec<String>,
         stdin: Option<String>,
     ) {
-        self.console_script_request = Some(ConsoleScriptInvocation { name, args, stdin });
-    }
-
-    pub fn take_console_script_request(&mut self) -> Option<ConsoleScriptInvocation> {
-        self.console_script_request.take()
+        self.request_effect(CommandEffect::ConsoleScript(ConsoleScriptInvocation {
+            name,
+            args,
+            stdin,
+        }));
     }
 
     pub fn request_fetch(&mut self, url: String, output_path: Option<String>) {
-        self.fetch_request = Some(FetchInvocation {
+        let invocation = FetchInvocation {
             url,
             output_path,
             cwd: self.cwd.clone(),
-        });
-    }
-
-    pub fn take_fetch_request(&mut self) -> Option<FetchInvocation> {
-        self.fetch_request.take()
+        };
+        self.request_effect(CommandEffect::Fetch(invocation));
     }
 
     pub fn set_stdin(&mut self, stdin: String) {
@@ -247,11 +237,10 @@ impl TerminalContext {
     }
 
     pub fn request_python_file(&mut self, path: String, args: Vec<String>) {
-        self.python_file_request = Some(PythonFileInvocation { path, args });
-    }
-
-    pub fn take_python_file_request(&mut self) -> Option<PythonFileInvocation> {
-        self.python_file_request.take()
+        self.request_effect(CommandEffect::PythonFile(PythonFileInvocation {
+            path,
+            args,
+        }));
     }
 
     pub fn request_console_pipe(
@@ -259,11 +248,22 @@ impl TerminalContext {
         producer: PipeProducer,
         consumer: crate::terminal::ParsedCommand,
     ) {
-        self.console_pipe_request = Some(ConsolePipe { producer, consumer });
+        self.request_effect(CommandEffect::ConsolePipe(ConsolePipe {
+            producer,
+            consumer,
+        }));
     }
 
-    pub fn take_console_pipe_request(&mut self) -> Option<ConsolePipe> {
-        self.console_pipe_request.take()
+    pub fn take_command_effect(&mut self) -> Option<CommandEffect> {
+        self.command_effect.take()
+    }
+
+    fn request_effect(&mut self, effect: CommandEffect) {
+        assert!(
+            self.command_effect.is_none(),
+            "a command cannot request more than one effect"
+        );
+        self.command_effect = Some(effect);
     }
 }
 
@@ -464,7 +464,7 @@ bad script = demo:bad
     }
 
     #[test]
-    fn records_requested_console_script_invocation() {
+    fn records_one_typed_command_effect() {
         let mut ctx = TerminalContext::new();
 
         ctx.request_console_script(
@@ -474,14 +474,14 @@ bad script = demo:bad
         );
 
         assert_eq!(
-            ctx.take_console_script_request(),
-            Some(ConsoleScriptInvocation {
+            ctx.take_command_effect(),
+            Some(CommandEffect::ConsoleScript(ConsoleScriptInvocation {
                 name: "lolcat".to_string(),
                 args: vec!["--seed".to_string(), "7".to_string()],
                 stdin: Some("hello\n".to_string()),
-            })
+            }))
         );
-        assert_eq!(ctx.take_console_script_request(), None);
+        assert_eq!(ctx.take_command_effect(), None);
     }
 
     #[test]

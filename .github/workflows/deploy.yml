@@ -64,8 +64,19 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      - name: Verify word assets
+        run: python3 scripts/check_word_assets.py
+
       - name: Build
         run: trunk build --release
+
+      - name: Verify release artifact
+        run: |
+          python3 scripts/check_word_assets.py --dist dist
+          if LC_ALL=C grep -R -a -i -E 'snek|cheat' dist --include='*.js' --include='*.wasm'; then
+            echo "debug-only Snek or cheat code leaked into the release artifact" >&2
+            exit 1
+          fi
 
       - name: Preserve custom domain
         run: cp CNAME dist/

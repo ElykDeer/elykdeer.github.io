@@ -16,9 +16,57 @@ pub const COLORS: [BubbleColor; 6] = [
 ];
 const SHOTS_PER_DROP: u32 = 5;
 const HARD_SHOTS_PER_DROP: u32 = 4;
-const LIVE_SAVE_VERSION: u8 = 1;
-const CURRENT_SAVE_VERSION: u8 = 2;
+const BUBBLES_SAVE_VERSION: u8 = 2;
 const BOMB_BLAST_RADIUS: usize = 2;
+
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ShopUpgrade {
+    ColorCall,
+    WildOrb,
+    WildCache,
+    BombDrop,
+    BlastRadius,
+    BombShot,
+    WildShot,
+    LightningBolt,
+    DrillShot,
+    DropReset,
+    SoftCeiling,
+    DropHaste,
+    PopDrop,
+    CleanStart,
+    ExtraRows,
+    QueueSight,
+    TraceSight,
+    Reticle,
+    LandingDot,
+    PrizeBubbles,
+    PrizeQuality,
+    Revival,
+    BankSight,
+    LightningPower,
+    DrillPower,
+}
+
+impl ShopUpgrade {
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) fn max_level(self) -> Option<u8> {
+        match self {
+            Self::ColorCall
+            | Self::BombShot
+            | Self::WildShot
+            | Self::LightningBolt
+            | Self::DrillShot
+            | Self::DropReset
+            | Self::Revival => None,
+            Self::WildCache | Self::Reticle => Some(2),
+            Self::BlastRadius | Self::PopDrop | Self::TraceSight | Self::LandingDot => Some(1),
+            Self::CleanStart | Self::ExtraRows => Some(ROW_UPGRADE_LEVELS),
+            _ => Some(3),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum BubbleColor {
@@ -59,7 +107,6 @@ pub struct Board {
 #[derive(Deserialize)]
 struct SavedBoardCells {
     cells: Vec<Vec<Option<BubbleColor>>>,
-    #[serde(default)]
     parity: usize,
 }
 
@@ -69,14 +116,18 @@ impl<'de> Deserialize<'de> for Board {
         D: Deserializer<'de>,
     {
         let saved = SavedBoardCells::deserialize(deserializer)?;
-        if saved.cells.len() > ROWS {
-            return Err(D::Error::custom("saved Bubbles board has too many rows"));
+        if saved.cells.len() != ROWS {
+            return Err(D::Error::custom(
+                "saved Bubbles board does not match current row count",
+            ));
         }
 
         let mut board = Self::empty();
         for (row, saved_row) in saved.cells.into_iter().enumerate() {
-            if saved_row.len() > COLS {
-                return Err(D::Error::custom("saved Bubbles board has too many columns"));
+            if saved_row.len() != COLS {
+                return Err(D::Error::custom(
+                    "saved Bubbles board does not match current column count",
+                ));
             }
             for (col, color) in saved_row.into_iter().enumerate() {
                 board.cells[row][col] = color;
@@ -1366,6 +1417,37 @@ fn normalize_active_level(enabled: &mut bool, purchased: u8, active: &mut u8) {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+fn cycle_active_upgrade_level(
+    enabled: &mut bool,
+    active_level: &mut u8,
+    purchased_level: u8,
+) -> u8 {
+    if purchased_level == 0 {
+        *enabled = false;
+        *active_level = 0;
+        return 0;
+    }
+
+    let current = if *enabled {
+        if *active_level == 0 {
+            purchased_level
+        } else {
+            (*active_level).min(purchased_level)
+        }
+    } else {
+        0
+    };
+    let next = if current >= purchased_level {
+        0
+    } else {
+        current + 1
+    };
+    *active_level = next;
+    *enabled = next > 0;
+    next
+}
+
 #[derive(Clone, Debug)]
 pub struct BubbleGame {
     pub board: Board,
@@ -1374,7 +1456,7 @@ pub struct BubbleGame {
     pub shots_until_drop: u32,
     pub game_over: bool,
     pub held: Option<BubbleColor>,
-    pub run: BubbleRun,
+    pub(crate) run: BubbleRun,
     rng: Lcg,
     queue: VecDeque<BubbleColor>,
     rules: GameRules,
@@ -1389,7 +1471,6 @@ pub struct SavedBubbleGame {
     shots_until_drop: u32,
     game_over: bool,
     held: Option<BubbleColor>,
-    #[serde(default)]
     run: BubbleRun,
     rng_state: u64,
     queue: Vec<BubbleColor>,
@@ -1445,7 +1526,7 @@ impl BubbleGame {
 
     pub fn save_state(&self) -> SavedBubbleGame {
         SavedBubbleGame {
-            version: CURRENT_SAVE_VERSION,
+            version: BUBBLES_SAVE_VERSION,
             hard: self.rules.is_hard(),
             board: self.board.clone(),
             score: self.score,
@@ -1459,8 +1540,7 @@ impl BubbleGame {
     }
 
     pub fn from_save(save: SavedBubbleGame, high_score: u64, hard: bool) -> Option<Self> {
-        if !(LIVE_SAVE_VERSION..=CURRENT_SAVE_VERSION).contains(&save.version) || save.hard != hard
-        {
+        if save.version != BUBBLES_SAVE_VERSION || save.hard != hard {
             return None;
         }
         if !save.is_resumable()
@@ -1472,20 +1552,12 @@ impl BubbleGame {
         }
 
         let rules = GameRules::for_mode(hard);
-        let mut run = save.run.normalized();
+        let run = save.run.normalized();
         if save.shots_until_drop == 0 || save.shots_until_drop > rules.shots_per_drop(&run) {
             return None;
         }
 
         let score = save.score;
-        if save.version < CURRENT_SAVE_VERSION
-            && save.game_over
-            && save.board.is_cleared()
-            && run.shop_awarded_round == run.round
-            && run.banked_score == 0
-        {
-            run.banked_score = score;
-        }
         let mut queue = save.queue;
         while queue.len() > run.queue_size() {
             queue.pop();
@@ -1685,17 +1757,376 @@ impl BubbleGame {
         self.high_score = high_score;
     }
 
-    pub fn shop_score(&self) -> u64 {
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) fn shop_score(&self) -> u64 {
         self.run.banked_score
     }
 
-    pub fn bank_current_score(&mut self) -> u64 {
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) fn award_shop_for_current_round(&mut self) -> Option<(u32, u64)> {
+        if !self.game_over
+            || !self.board.is_cleared()
+            || self.run.shop_awarded_round == self.run.round
+        {
+            return None;
+        }
+
+        let round = self.run.round;
+        let deposited = self.bank_current_score();
+        self.run.shop_awarded_round = round;
+        Some((round, deposited))
+    }
+
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) fn purchase_upgrade(&mut self, upgrade: ShopUpgrade, cost: u64) -> Option<u32> {
+        if upgrade
+            .max_level()
+            .is_some_and(|max_level| self.upgrade_level(upgrade) >= max_level)
+            || !self.spend_shop_score(cost)
+        {
+            return None;
+        }
+
+        Some(self.apply_upgrade(upgrade))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn cycle_upgrade_level(&mut self, upgrade: ShopUpgrade) -> u32 {
+        match upgrade {
+            ShopUpgrade::ColorCall => u32::from(self.run.color_call_enabled),
+            ShopUpgrade::WildOrb => {
+                let active = cycle_active_upgrade_level(
+                    &mut self.run.wild_orb_enabled,
+                    &mut self.run.wild_orb_active_level,
+                    self.run.wild_orb_level,
+                );
+                self.finish_discarded_shot();
+                if self.run.wild_orb_enabled {
+                    active as u32
+                } else {
+                    0
+                }
+            }
+            ShopUpgrade::WildCache => cycle_active_upgrade_level(
+                &mut self.run.wild_cache_enabled,
+                &mut self.run.wild_cache_active_level,
+                self.run.wild_cache_level,
+            ) as u32,
+            ShopUpgrade::BombDrop => cycle_active_upgrade_level(
+                &mut self.run.bomb_drop_enabled,
+                &mut self.run.bomb_drop_active_level,
+                self.run.bomb_drop_level,
+            ) as u32,
+            ShopUpgrade::BlastRadius => cycle_active_upgrade_level(
+                &mut self.run.bomb_radius_enabled,
+                &mut self.run.bomb_radius_active_level,
+                self.run.bomb_radius_level,
+            ) as u32,
+            ShopUpgrade::BombShot
+            | ShopUpgrade::WildShot
+            | ShopUpgrade::LightningBolt
+            | ShopUpgrade::DrillShot
+            | ShopUpgrade::DropReset => 0,
+            ShopUpgrade::SoftCeiling => cycle_active_upgrade_level(
+                &mut self.run.drop_delay_enabled,
+                &mut self.run.drop_delay_active_level,
+                self.run.drop_delay_level,
+            ) as u32,
+            ShopUpgrade::DropHaste => cycle_active_upgrade_level(
+                &mut self.run.drop_haste_enabled,
+                &mut self.run.drop_haste_active_level,
+                self.run.drop_haste_level,
+            ) as u32,
+            ShopUpgrade::PopDrop => cycle_active_upgrade_level(
+                &mut self.run.pop_drop_enabled,
+                &mut self.run.pop_drop_active_level,
+                self.run.pop_drop_level,
+            ) as u32,
+            ShopUpgrade::CleanStart => {
+                let active = cycle_active_upgrade_level(
+                    &mut self.run.clean_start_enabled,
+                    &mut self.run.clean_start_active_level,
+                    self.run.clean_start_level,
+                );
+                if active > 0 {
+                    self.disable_extra_rows();
+                }
+                active as u32
+            }
+            ShopUpgrade::ExtraRows => {
+                let active = cycle_active_upgrade_level(
+                    &mut self.run.extra_rows_enabled,
+                    &mut self.run.extra_rows_active_level,
+                    self.run.extra_rows_level,
+                );
+                if active > 0 {
+                    self.disable_clean_start();
+                }
+                active as u32
+            }
+            ShopUpgrade::QueueSight => {
+                let active = cycle_active_upgrade_level(
+                    &mut self.run.queue_sight_enabled,
+                    &mut self.run.queue_sight_active_level,
+                    self.run.queue_sight_level,
+                );
+                self.finish_discarded_shot();
+                active as u32
+            }
+            ShopUpgrade::TraceSight => cycle_active_upgrade_level(
+                &mut self.run.trace_sight_enabled,
+                &mut self.run.trace_sight_active_level,
+                self.run.trace_sight_level,
+            ) as u32,
+            ShopUpgrade::Reticle => cycle_active_upgrade_level(
+                &mut self.run.reticle_enabled,
+                &mut self.run.reticle_active_level,
+                self.run.reticle_level,
+            ) as u32,
+            ShopUpgrade::LandingDot => cycle_active_upgrade_level(
+                &mut self.run.landing_dot_enabled,
+                &mut self.run.landing_dot_active_level,
+                self.run.landing_dot_level,
+            ) as u32,
+            ShopUpgrade::PrizeBubbles => cycle_active_upgrade_level(
+                &mut self.run.prize_bubble_enabled,
+                &mut self.run.prize_bubble_active_level,
+                self.run.prize_bubble_level,
+            ) as u32,
+            ShopUpgrade::PrizeQuality => cycle_active_upgrade_level(
+                &mut self.run.prize_quality_enabled,
+                &mut self.run.prize_quality_active_level,
+                self.run.prize_quality_level,
+            ) as u32,
+            ShopUpgrade::Revival => u32::from(self.run.revive_enabled),
+            ShopUpgrade::LightningPower => cycle_active_upgrade_level(
+                &mut self.run.lightning_power_enabled,
+                &mut self.run.lightning_power_active_level,
+                self.run.lightning_power_level,
+            ) as u32,
+            ShopUpgrade::DrillPower => cycle_active_upgrade_level(
+                &mut self.run.drill_power_enabled,
+                &mut self.run.drill_power_active_level,
+                self.run.drill_power_level,
+            ) as u32,
+            ShopUpgrade::BankSight => cycle_active_upgrade_level(
+                &mut self.run.bank_sight_enabled,
+                &mut self.run.bank_sight_active_level,
+                self.run.bank_sight_level,
+            ) as u32,
+        }
+    }
+
+    #[cfg(any(target_arch = "wasm32", test))]
+    fn upgrade_level(&self, upgrade: ShopUpgrade) -> u8 {
+        match upgrade {
+            ShopUpgrade::ColorCall => self.run.color_call_charges.min(u8::MAX as u32) as u8,
+            ShopUpgrade::WildOrb => self.run.wild_orb_level,
+            ShopUpgrade::WildCache => self.run.wild_cache_level,
+            ShopUpgrade::BombDrop => self.run.bomb_drop_level,
+            ShopUpgrade::BlastRadius => self.run.bomb_radius_level,
+            ShopUpgrade::BombShot => self.run.bomb_shot_charges.min(u8::MAX as u32) as u8,
+            ShopUpgrade::WildShot => self.run.wild_shot_charges.min(u8::MAX as u32) as u8,
+            ShopUpgrade::LightningBolt => self.run.lightning_charges.min(u8::MAX as u32) as u8,
+            ShopUpgrade::DrillShot => self.run.drill_charges.min(u8::MAX as u32) as u8,
+            ShopUpgrade::DropReset => self.run.drop_reset_charges.min(u8::MAX as u32) as u8,
+            ShopUpgrade::SoftCeiling => self.run.drop_delay_level,
+            ShopUpgrade::DropHaste => self.run.drop_haste_level,
+            ShopUpgrade::PopDrop => self.run.pop_drop_level,
+            ShopUpgrade::CleanStart => self.run.clean_start_level,
+            ShopUpgrade::ExtraRows => self.run.extra_rows_level,
+            ShopUpgrade::QueueSight => self.run.queue_sight_level,
+            ShopUpgrade::TraceSight => self.run.trace_sight_level,
+            ShopUpgrade::Reticle => self.run.reticle_level,
+            ShopUpgrade::LandingDot => self.run.landing_dot_level,
+            ShopUpgrade::PrizeBubbles => self.run.prize_bubble_level,
+            ShopUpgrade::PrizeQuality => self.run.prize_quality_level,
+            ShopUpgrade::Revival => self.run.revive_charges.min(u8::MAX as u32) as u8,
+            ShopUpgrade::BankSight => self.run.bank_sight_level,
+            ShopUpgrade::LightningPower => self.run.lightning_power_level,
+            ShopUpgrade::DrillPower => self.run.drill_power_level,
+        }
+    }
+
+    #[cfg(any(target_arch = "wasm32", test))]
+    fn apply_upgrade(&mut self, upgrade: ShopUpgrade) -> u32 {
+        match upgrade {
+            ShopUpgrade::ColorCall => {
+                self.run.color_call_charges = self.run.color_call_charges.saturating_add(1);
+                self.run.color_call_enabled = true;
+                self.run.color_call_charges
+            }
+            ShopUpgrade::WildOrb => {
+                self.run.wild_orb_level = self.run.wild_orb_level.saturating_add(1).min(3);
+                self.run.wild_orb_enabled = true;
+                self.run.wild_orb_active_level = self.run.wild_orb_level;
+                self.finish_discarded_shot();
+                self.run.wild_orb_level as u32
+            }
+            ShopUpgrade::WildCache => {
+                self.run.wild_cache_level = self.run.wild_cache_level.saturating_add(1).min(2);
+                self.run.wild_cache_enabled = true;
+                self.run.wild_cache_active_level = self.run.wild_cache_level;
+                self.run.wild_cache_level as u32
+            }
+            ShopUpgrade::BombDrop => {
+                self.run.bomb_drop_level = self.run.bomb_drop_level.saturating_add(1).min(3);
+                self.run.bomb_drop_enabled = true;
+                self.run.bomb_drop_active_level = self.run.bomb_drop_level;
+                self.run.bomb_drop_level as u32
+            }
+            ShopUpgrade::BlastRadius => {
+                self.run.bomb_radius_level = self.run.bomb_radius_level.saturating_add(1).min(1);
+                self.run.bomb_radius_enabled = true;
+                self.run.bomb_radius_active_level = self.run.bomb_radius_level;
+                self.run.bomb_radius_level as u32
+            }
+            ShopUpgrade::BombShot => {
+                self.run.bomb_shot_charges = self.run.bomb_shot_charges.saturating_add(1);
+                self.run.bomb_shot_charges
+            }
+            ShopUpgrade::WildShot => {
+                self.run.wild_shot_charges = self.run.wild_shot_charges.saturating_add(1);
+                self.run.wild_shot_charges
+            }
+            ShopUpgrade::LightningBolt => {
+                self.run.lightning_charges = self.run.lightning_charges.saturating_add(1);
+                self.run.lightning_charges
+            }
+            ShopUpgrade::DrillShot => {
+                self.run.drill_charges = self.run.drill_charges.saturating_add(1);
+                self.run.drill_charges
+            }
+            ShopUpgrade::DropReset => {
+                self.run.drop_reset_charges = self.run.drop_reset_charges.saturating_add(1);
+                self.run.drop_reset_charges
+            }
+            ShopUpgrade::SoftCeiling => {
+                self.run.drop_delay_level = self.run.drop_delay_level.saturating_add(1).min(3);
+                self.run.drop_delay_enabled = true;
+                self.run.drop_delay_active_level = self.run.drop_delay_level;
+                self.run.drop_delay_level as u32
+            }
+            ShopUpgrade::DropHaste => {
+                self.run.drop_haste_level = self.run.drop_haste_level.saturating_add(1).min(3);
+                self.run.drop_haste_enabled = true;
+                self.run.drop_haste_active_level = self.run.drop_haste_level;
+                self.run.drop_haste_level as u32
+            }
+            ShopUpgrade::PopDrop => {
+                self.run.pop_drop_level = self.run.pop_drop_level.saturating_add(1).min(1);
+                self.run.pop_drop_enabled = true;
+                self.run.pop_drop_active_level = self.run.pop_drop_level;
+                self.run.pop_drop_level as u32
+            }
+            ShopUpgrade::CleanStart => {
+                self.run.clean_start_level = self
+                    .run
+                    .clean_start_level
+                    .saturating_add(1)
+                    .min(ROW_UPGRADE_LEVELS);
+                self.run.clean_start_enabled = true;
+                self.run.clean_start_active_level = self.run.clean_start_level;
+                self.disable_extra_rows();
+                self.run.clean_start_level as u32
+            }
+            ShopUpgrade::ExtraRows => {
+                self.run.extra_rows_level = self
+                    .run
+                    .extra_rows_level
+                    .saturating_add(1)
+                    .min(ROW_UPGRADE_LEVELS);
+                self.run.extra_rows_enabled = true;
+                self.run.extra_rows_active_level = self.run.extra_rows_level;
+                self.disable_clean_start();
+                self.run.extra_rows_level as u32
+            }
+            ShopUpgrade::QueueSight => {
+                self.run.queue_sight_level = self.run.queue_sight_level.saturating_add(1).min(3);
+                self.run.queue_sight_enabled = true;
+                self.run.queue_sight_active_level = self.run.queue_sight_level;
+                self.finish_discarded_shot();
+                self.run.queue_sight_level as u32
+            }
+            ShopUpgrade::TraceSight => {
+                self.run.trace_sight_level = self.run.trace_sight_level.saturating_add(1).min(1);
+                self.run.trace_sight_enabled = true;
+                self.run.trace_sight_active_level = self.run.trace_sight_level;
+                self.run.trace_sight_level as u32
+            }
+            ShopUpgrade::Reticle => {
+                self.run.reticle_level = self.run.reticle_level.saturating_add(1).min(2);
+                self.run.reticle_enabled = true;
+                self.run.reticle_active_level = self.run.reticle_level;
+                self.run.reticle_level as u32
+            }
+            ShopUpgrade::LandingDot => {
+                self.run.landing_dot_level = self.run.landing_dot_level.saturating_add(1).min(1);
+                self.run.landing_dot_enabled = true;
+                self.run.landing_dot_active_level = self.run.landing_dot_level;
+                self.run.landing_dot_level as u32
+            }
+            ShopUpgrade::PrizeBubbles => {
+                self.run.prize_bubble_level = self.run.prize_bubble_level.saturating_add(1).min(3);
+                self.run.prize_bubble_enabled = true;
+                self.run.prize_bubble_active_level = self.run.prize_bubble_level;
+                self.run.prize_bubble_level as u32
+            }
+            ShopUpgrade::PrizeQuality => {
+                self.run.prize_quality_level =
+                    self.run.prize_quality_level.saturating_add(1).min(3);
+                self.run.prize_quality_enabled = true;
+                self.run.prize_quality_active_level = self.run.prize_quality_level;
+                self.run.prize_quality_level as u32
+            }
+            ShopUpgrade::Revival => {
+                self.run.revive_charges = self.run.revive_charges.saturating_add(1);
+                self.run.revive_enabled = true;
+                self.run.revive_charges
+            }
+            ShopUpgrade::LightningPower => {
+                self.run.lightning_power_level =
+                    self.run.lightning_power_level.saturating_add(1).min(3);
+                self.run.lightning_power_enabled = true;
+                self.run.lightning_power_active_level = self.run.lightning_power_level;
+                self.run.lightning_power_level as u32
+            }
+            ShopUpgrade::DrillPower => {
+                self.run.drill_power_level = self.run.drill_power_level.saturating_add(1).min(3);
+                self.run.drill_power_enabled = true;
+                self.run.drill_power_active_level = self.run.drill_power_level;
+                self.run.drill_power_level as u32
+            }
+            ShopUpgrade::BankSight => {
+                self.run.bank_sight_level = self.run.bank_sight_level.saturating_add(1).min(3);
+                self.run.bank_sight_enabled = true;
+                self.run.bank_sight_active_level = self.run.bank_sight_level;
+                self.run.bank_sight_level as u32
+            }
+        }
+    }
+
+    #[cfg(any(target_arch = "wasm32", test))]
+    fn disable_clean_start(&mut self) {
+        self.run.clean_start_enabled = false;
+        self.run.clean_start_active_level = 0;
+    }
+
+    #[cfg(any(target_arch = "wasm32", test))]
+    fn disable_extra_rows(&mut self) {
+        self.run.extra_rows_enabled = false;
+        self.run.extra_rows_active_level = 0;
+    }
+
+    #[cfg(any(target_arch = "wasm32", test))]
+    fn bank_current_score(&mut self) -> u64 {
         let score = self.score;
         self.run.banked_score = self.run.banked_score.saturating_add(score);
         score
     }
 
-    pub fn spend_shop_score(&mut self, amount: u64) -> bool {
+    #[cfg(any(target_arch = "wasm32", test))]
+    fn spend_shop_score(&mut self, amount: u64) -> bool {
         if self.run.banked_score < amount {
             return false;
         }
@@ -1703,7 +2134,8 @@ impl BubbleGame {
         true
     }
 
-    pub fn add_shop_score(&mut self, amount: u64) {
+    #[cfg(any(test, all(target_arch = "wasm32", debug_assertions)))]
+    pub(crate) fn add_shop_score(&mut self, amount: u64) {
         self.run.banked_score = self.run.banked_score.saturating_add(amount);
     }
 
@@ -2046,6 +2478,68 @@ fn choose_open_slot(rng: &mut Lcg, occupied: &mut [bool; COLS]) -> Option<usize>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shop_purchase_spends_and_applies_as_one_transaction() {
+        let mut game = BubbleGame::new(7, 0);
+        game.add_shop_score(1_000);
+
+        assert_eq!(game.purchase_upgrade(ShopUpgrade::WildOrb, 400), Some(1));
+        assert_eq!(game.shop_score(), 600);
+        assert_eq!(game.run.wild_orb_level, 1);
+        assert_eq!(game.run.wild_orb_active_level, 1);
+        assert!(game.run.wild_orb_enabled);
+    }
+
+    #[test]
+    fn rejected_shop_purchase_does_not_spend_or_apply() {
+        let mut game = BubbleGame::new(7, 0);
+        game.add_shop_score(399);
+
+        assert_eq!(game.purchase_upgrade(ShopUpgrade::WildOrb, 400), None);
+        assert_eq!(game.shop_score(), 399);
+        assert_eq!(game.run.wild_orb_level, 0);
+
+        game.add_shop_score(10_000);
+        for expected in 1..=3 {
+            assert_eq!(
+                game.purchase_upgrade(ShopUpgrade::WildOrb, 100),
+                Some(expected)
+            );
+        }
+        let score_at_cap = game.shop_score();
+        assert_eq!(game.purchase_upgrade(ShopUpgrade::WildOrb, 100), None);
+        assert_eq!(game.shop_score(), score_at_cap);
+        assert_eq!(game.run.wild_orb_level, 3);
+    }
+
+    #[test]
+    fn row_upgrade_transactions_preserve_mutual_exclusion() {
+        let mut game = BubbleGame::new(7, 0);
+        game.add_shop_score(2_000);
+
+        assert_eq!(game.purchase_upgrade(ShopUpgrade::CleanStart, 100), Some(1));
+        assert!(game.run.clean_start_enabled);
+
+        assert_eq!(game.purchase_upgrade(ShopUpgrade::ExtraRows, 100), Some(1));
+        assert!(game.run.extra_rows_enabled);
+        assert_eq!(game.run.extra_rows_active_level, 1);
+        assert!(!game.run.clean_start_enabled);
+        assert_eq!(game.run.clean_start_active_level, 0);
+    }
+
+    #[test]
+    fn shop_round_reward_can_only_be_claimed_once() {
+        let mut game = BubbleGame::new(7, 0);
+        game.score = 750;
+        game.board = Board::empty();
+        game.game_over = true;
+
+        assert_eq!(game.award_shop_for_current_round(), Some((1, 750)));
+        assert_eq!(game.shop_score(), 750);
+        assert_eq!(game.award_shop_for_current_round(), None);
+        assert_eq!(game.shop_score(), 750);
+    }
 
     #[test]
     fn matching_three_pops_and_scores() {
@@ -3175,28 +3669,30 @@ mod tests {
     }
 
     #[test]
-    fn saved_games_migrate_live_shorter_boards_to_current_height() {
-        let mut game = BubbleGame::new(7, 0);
-        game.board
-            .set(CellCoord::new(12, 3), Some(BubbleColor::Rose));
-        game.score = 420;
-        game.run.queue_sight_level = 1;
-        game.run.queue_sight_enabled = true;
+    fn saved_games_require_current_version() {
+        let mut save = BubbleGame::new(7, 0).save_state();
+        save.version = BUBBLES_SAVE_VERSION - 1;
 
-        let mut raw = serde_json::to_value(game.save_state()).unwrap();
-        raw["version"] = serde_json::json!(LIVE_SAVE_VERSION);
-        raw["board"]["cells"].as_array_mut().unwrap().truncate(13);
+        assert!(BubbleGame::from_save(save, 0, false).is_none());
+    }
 
-        let save = serde_json::from_value::<SavedBubbleGame>(raw).unwrap();
-        let restored = BubbleGame::from_save(save, 0, false).unwrap();
+    #[test]
+    fn saved_games_require_current_board_shape() {
+        let mut raw = serde_json::to_value(BubbleGame::new(7, 0).save_state()).unwrap();
+        raw["board"]["cells"]
+            .as_array_mut()
+            .unwrap()
+            .truncate(ROWS - 1);
 
-        assert_eq!(
-            restored.board.get(CellCoord::new(12, 3)),
-            Some(BubbleColor::Rose)
-        );
-        assert!(restored.board.is_empty(CellCoord::new(ROWS - 1, 3)));
-        assert_eq!(restored.score, 420);
-        assert_eq!(restored.run.queue_sight_level, 1);
+        assert!(serde_json::from_value::<SavedBubbleGame>(raw).is_err());
+    }
+
+    #[test]
+    fn saved_games_require_run_data() {
+        let mut raw = serde_json::to_value(BubbleGame::new(7, 0).save_state()).unwrap();
+        raw.as_object_mut().unwrap().remove("run");
+
+        assert!(serde_json::from_value::<SavedBubbleGame>(raw).is_err());
     }
 
     #[test]

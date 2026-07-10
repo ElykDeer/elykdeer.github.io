@@ -12,9 +12,9 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, KeyboardEvent, MouseEvent, TouchEvent};
 
-use super::core::{
-    score_breakdown, Board, BubbleColor, BubbleGame, CellCoord, Resolution, SavedBubbleGame, COLS,
-    ROWS, ROW_UPGRADE_LEVELS,
+use super::state::{
+    score_breakdown, Board, BubbleColor, BubbleGame, CellCoord, Resolution, SavedBubbleGame,
+    ShopUpgrade, COLS, ROWS,
 };
 
 const HIGH_SCORE_STORAGE_KEY: &str = "elyk.bubbles.high-score";
@@ -770,35 +770,6 @@ impl BubbleProgress {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ShopUpgrade {
-    ColorCall,
-    WildOrb,
-    WildCache,
-    BombDrop,
-    BlastRadius,
-    BombShot,
-    WildShot,
-    LightningBolt,
-    DrillShot,
-    DropReset,
-    SoftCeiling,
-    DropHaste,
-    PopDrop,
-    CleanStart,
-    ExtraRows,
-    QueueSight,
-    TraceSight,
-    Reticle,
-    LandingDot,
-    PrizeBubbles,
-    PrizeQuality,
-    Revival,
-    BankSight,
-    LightningPower,
-    DrillPower,
-}
-
 #[derive(Clone, Debug)]
 struct ShopOption {
     upgrade: ShopUpgrade,
@@ -1170,13 +1141,13 @@ impl CanvasRunner {
     }
 
     fn ensure_shop_reward(&mut self) {
-        if !self.shop_visible() || self.game.run.shop_awarded_round == self.game.run.round {
+        if !self.shop_visible() {
             return;
         }
 
-        let stage = self.game.run.round;
-        let deposited = self.game.bank_current_score();
-        self.game.run.shop_awarded_round = stage;
+        let Some((stage, deposited)) = self.game.award_shop_for_current_round() else {
+            return;
+        };
 
         if stage > self.progress.best_round {
             self.progress.best_round = stage;
@@ -1211,8 +1182,13 @@ impl CanvasRunner {
             return;
         }
 
-        self.game.spend_shop_score(option.cost);
-        self.apply_upgrade(option.upgrade);
+        if self
+            .game
+            .purchase_upgrade(option.upgrade, option.cost)
+            .is_none()
+        {
+            return;
+        }
         save_game(self.hard, &self.game);
     }
 
@@ -1240,7 +1216,7 @@ impl CanvasRunner {
         let Some(option) = self.owned_shop_options().into_iter().nth(index) else {
             return;
         };
-        self.cycle_upgrade_level(option.upgrade);
+        self.game.cycle_upgrade_level(option.upgrade);
         save_game(self.hard, &self.game);
     }
 
@@ -1256,8 +1232,13 @@ impl CanvasRunner {
             self.message = format!("Need {} score for {}.", option.cost, option.title);
             return;
         }
-        self.game.spend_shop_score(option.cost);
-        self.apply_upgrade(option.upgrade);
+        if self
+            .game
+            .purchase_upgrade(option.upgrade, option.cost)
+            .is_none()
+        {
+            return;
+        }
         save_game(self.hard, &self.game);
     }
 
@@ -1371,316 +1352,6 @@ impl CanvasRunner {
         }
     }
 
-    fn apply_upgrade(&mut self, upgrade: ShopUpgrade) -> u32 {
-        match upgrade {
-            ShopUpgrade::ColorCall => {
-                self.game.run.color_call_charges =
-                    self.game.run.color_call_charges.saturating_add(1);
-                self.game.run.color_call_enabled = true;
-                self.game.run.color_call_charges
-            }
-            ShopUpgrade::WildOrb => {
-                self.game.run.wild_orb_level =
-                    self.game.run.wild_orb_level.saturating_add(1).min(3);
-                self.game.run.wild_orb_enabled = true;
-                self.game.run.wild_orb_active_level = self.game.run.wild_orb_level;
-                self.game.finish_discarded_shot();
-                self.game.run.wild_orb_level as u32
-            }
-            ShopUpgrade::WildCache => {
-                self.game.run.wild_cache_level =
-                    self.game.run.wild_cache_level.saturating_add(1).min(2);
-                self.game.run.wild_cache_enabled = true;
-                self.game.run.wild_cache_active_level = self.game.run.wild_cache_level;
-                self.game.run.wild_cache_level as u32
-            }
-            ShopUpgrade::BombDrop => {
-                self.game.run.bomb_drop_level =
-                    self.game.run.bomb_drop_level.saturating_add(1).min(3);
-                self.game.run.bomb_drop_enabled = true;
-                self.game.run.bomb_drop_active_level = self.game.run.bomb_drop_level;
-                self.game.run.bomb_drop_level as u32
-            }
-            ShopUpgrade::BlastRadius => {
-                self.game.run.bomb_radius_level =
-                    self.game.run.bomb_radius_level.saturating_add(1).min(1);
-                self.game.run.bomb_radius_enabled = true;
-                self.game.run.bomb_radius_active_level = self.game.run.bomb_radius_level;
-                self.game.run.bomb_radius_level as u32
-            }
-            ShopUpgrade::BombShot => {
-                self.game.run.bomb_shot_charges = self.game.run.bomb_shot_charges.saturating_add(1);
-                self.game.run.bomb_shot_charges
-            }
-            ShopUpgrade::WildShot => {
-                self.game.run.wild_shot_charges = self.game.run.wild_shot_charges.saturating_add(1);
-                self.game.run.wild_shot_charges
-            }
-            ShopUpgrade::LightningBolt => {
-                self.game.run.lightning_charges = self.game.run.lightning_charges.saturating_add(1);
-                self.game.run.lightning_charges
-            }
-            ShopUpgrade::DrillShot => {
-                self.game.run.drill_charges = self.game.run.drill_charges.saturating_add(1);
-                self.game.run.drill_charges
-            }
-            ShopUpgrade::DropReset => {
-                self.game.run.drop_reset_charges =
-                    self.game.run.drop_reset_charges.saturating_add(1);
-                self.game.run.drop_reset_charges
-            }
-            ShopUpgrade::SoftCeiling => {
-                self.game.run.drop_delay_level =
-                    self.game.run.drop_delay_level.saturating_add(1).min(3);
-                self.game.run.drop_delay_enabled = true;
-                self.game.run.drop_delay_active_level = self.game.run.drop_delay_level;
-                self.game.run.drop_delay_level as u32
-            }
-            ShopUpgrade::DropHaste => {
-                self.game.run.drop_haste_level =
-                    self.game.run.drop_haste_level.saturating_add(1).min(3);
-                self.game.run.drop_haste_enabled = true;
-                self.game.run.drop_haste_active_level = self.game.run.drop_haste_level;
-                self.game.run.drop_haste_level as u32
-            }
-            ShopUpgrade::PopDrop => {
-                self.game.run.pop_drop_level =
-                    self.game.run.pop_drop_level.saturating_add(1).min(1);
-                self.game.run.pop_drop_enabled = true;
-                self.game.run.pop_drop_active_level = self.game.run.pop_drop_level;
-                self.game.run.pop_drop_level as u32
-            }
-            ShopUpgrade::CleanStart => {
-                self.game.run.clean_start_level = self
-                    .game
-                    .run
-                    .clean_start_level
-                    .saturating_add(1)
-                    .min(ROW_UPGRADE_LEVELS);
-                self.game.run.clean_start_enabled = true;
-                self.game.run.clean_start_active_level = self.game.run.clean_start_level;
-                self.disable_extra_rows();
-                self.game.run.clean_start_level as u32
-            }
-            ShopUpgrade::ExtraRows => {
-                self.game.run.extra_rows_level = self
-                    .game
-                    .run
-                    .extra_rows_level
-                    .saturating_add(1)
-                    .min(ROW_UPGRADE_LEVELS);
-                self.game.run.extra_rows_enabled = true;
-                self.game.run.extra_rows_active_level = self.game.run.extra_rows_level;
-                self.disable_clean_start();
-                self.game.run.extra_rows_level as u32
-            }
-            ShopUpgrade::QueueSight => {
-                self.game.run.queue_sight_level =
-                    self.game.run.queue_sight_level.saturating_add(1).min(3);
-                self.game.run.queue_sight_enabled = true;
-                self.game.run.queue_sight_active_level = self.game.run.queue_sight_level;
-                self.game.finish_discarded_shot();
-                self.game.run.queue_sight_level as u32
-            }
-            ShopUpgrade::TraceSight => {
-                self.game.run.trace_sight_level =
-                    self.game.run.trace_sight_level.saturating_add(1).min(1);
-                self.game.run.trace_sight_enabled = true;
-                self.game.run.trace_sight_active_level = self.game.run.trace_sight_level;
-                self.game.run.trace_sight_level as u32
-            }
-            ShopUpgrade::Reticle => {
-                self.game.run.reticle_level = self.game.run.reticle_level.saturating_add(1).min(2);
-                self.game.run.reticle_enabled = true;
-                self.game.run.reticle_active_level = self.game.run.reticle_level;
-                self.game.run.reticle_level as u32
-            }
-            ShopUpgrade::LandingDot => {
-                self.game.run.landing_dot_level =
-                    self.game.run.landing_dot_level.saturating_add(1).min(1);
-                self.game.run.landing_dot_enabled = true;
-                self.game.run.landing_dot_active_level = self.game.run.landing_dot_level;
-                self.game.run.landing_dot_level as u32
-            }
-            ShopUpgrade::PrizeBubbles => {
-                self.game.run.prize_bubble_level =
-                    self.game.run.prize_bubble_level.saturating_add(1).min(3);
-                self.game.run.prize_bubble_enabled = true;
-                self.game.run.prize_bubble_active_level = self.game.run.prize_bubble_level;
-                self.game.run.prize_bubble_level as u32
-            }
-            ShopUpgrade::PrizeQuality => {
-                self.game.run.prize_quality_level =
-                    self.game.run.prize_quality_level.saturating_add(1).min(3);
-                self.game.run.prize_quality_enabled = true;
-                self.game.run.prize_quality_active_level = self.game.run.prize_quality_level;
-                self.game.run.prize_quality_level as u32
-            }
-            ShopUpgrade::Revival => {
-                self.game.run.revive_charges = self.game.run.revive_charges.saturating_add(1);
-                self.game.run.revive_enabled = true;
-                self.game.run.revive_charges
-            }
-            ShopUpgrade::LightningPower => {
-                self.game.run.lightning_power_level =
-                    self.game.run.lightning_power_level.saturating_add(1).min(3);
-                self.game.run.lightning_power_enabled = true;
-                self.game.run.lightning_power_active_level = self.game.run.lightning_power_level;
-                self.game.run.lightning_power_level as u32
-            }
-            ShopUpgrade::DrillPower => {
-                self.game.run.drill_power_level =
-                    self.game.run.drill_power_level.saturating_add(1).min(3);
-                self.game.run.drill_power_enabled = true;
-                self.game.run.drill_power_active_level = self.game.run.drill_power_level;
-                self.game.run.drill_power_level as u32
-            }
-            ShopUpgrade::BankSight => {
-                self.game.run.bank_sight_level =
-                    self.game.run.bank_sight_level.saturating_add(1).min(3);
-                self.game.run.bank_sight_enabled = true;
-                self.game.run.bank_sight_active_level = self.game.run.bank_sight_level;
-                self.game.run.bank_sight_level as u32
-            }
-        }
-    }
-
-    fn cycle_upgrade_level(&mut self, upgrade: ShopUpgrade) -> u32 {
-        match upgrade {
-            ShopUpgrade::ColorCall => u32::from(self.game.run.color_call_enabled),
-            ShopUpgrade::WildOrb => {
-                let active = cycle_active_upgrade_level(
-                    &mut self.game.run.wild_orb_enabled,
-                    &mut self.game.run.wild_orb_active_level,
-                    self.game.run.wild_orb_level,
-                );
-                self.game.finish_discarded_shot();
-                self.game
-                    .run
-                    .wild_orb_enabled
-                    .then_some(active as u32)
-                    .unwrap_or(0)
-            }
-            ShopUpgrade::WildCache => cycle_active_upgrade_level(
-                &mut self.game.run.wild_cache_enabled,
-                &mut self.game.run.wild_cache_active_level,
-                self.game.run.wild_cache_level,
-            ) as u32,
-            ShopUpgrade::BombDrop => cycle_active_upgrade_level(
-                &mut self.game.run.bomb_drop_enabled,
-                &mut self.game.run.bomb_drop_active_level,
-                self.game.run.bomb_drop_level,
-            ) as u32,
-            ShopUpgrade::BlastRadius => cycle_active_upgrade_level(
-                &mut self.game.run.bomb_radius_enabled,
-                &mut self.game.run.bomb_radius_active_level,
-                self.game.run.bomb_radius_level,
-            ) as u32,
-            ShopUpgrade::BombShot
-            | ShopUpgrade::WildShot
-            | ShopUpgrade::LightningBolt
-            | ShopUpgrade::DrillShot
-            | ShopUpgrade::DropReset => 0,
-            ShopUpgrade::SoftCeiling => cycle_active_upgrade_level(
-                &mut self.game.run.drop_delay_enabled,
-                &mut self.game.run.drop_delay_active_level,
-                self.game.run.drop_delay_level,
-            ) as u32,
-            ShopUpgrade::DropHaste => cycle_active_upgrade_level(
-                &mut self.game.run.drop_haste_enabled,
-                &mut self.game.run.drop_haste_active_level,
-                self.game.run.drop_haste_level,
-            ) as u32,
-            ShopUpgrade::PopDrop => cycle_active_upgrade_level(
-                &mut self.game.run.pop_drop_enabled,
-                &mut self.game.run.pop_drop_active_level,
-                self.game.run.pop_drop_level,
-            ) as u32,
-            ShopUpgrade::CleanStart => {
-                let active = cycle_active_upgrade_level(
-                    &mut self.game.run.clean_start_enabled,
-                    &mut self.game.run.clean_start_active_level,
-                    self.game.run.clean_start_level,
-                );
-                if active > 0 {
-                    self.disable_extra_rows();
-                }
-                active as u32
-            }
-            ShopUpgrade::ExtraRows => {
-                let active = cycle_active_upgrade_level(
-                    &mut self.game.run.extra_rows_enabled,
-                    &mut self.game.run.extra_rows_active_level,
-                    self.game.run.extra_rows_level,
-                );
-                if active > 0 {
-                    self.disable_clean_start();
-                }
-                active as u32
-            }
-            ShopUpgrade::QueueSight => {
-                let active = cycle_active_upgrade_level(
-                    &mut self.game.run.queue_sight_enabled,
-                    &mut self.game.run.queue_sight_active_level,
-                    self.game.run.queue_sight_level,
-                );
-                self.game.finish_discarded_shot();
-                active as u32
-            }
-            ShopUpgrade::TraceSight => cycle_active_upgrade_level(
-                &mut self.game.run.trace_sight_enabled,
-                &mut self.game.run.trace_sight_active_level,
-                self.game.run.trace_sight_level,
-            ) as u32,
-            ShopUpgrade::Reticle => cycle_active_upgrade_level(
-                &mut self.game.run.reticle_enabled,
-                &mut self.game.run.reticle_active_level,
-                self.game.run.reticle_level,
-            ) as u32,
-            ShopUpgrade::LandingDot => cycle_active_upgrade_level(
-                &mut self.game.run.landing_dot_enabled,
-                &mut self.game.run.landing_dot_active_level,
-                self.game.run.landing_dot_level,
-            ) as u32,
-            ShopUpgrade::PrizeBubbles => cycle_active_upgrade_level(
-                &mut self.game.run.prize_bubble_enabled,
-                &mut self.game.run.prize_bubble_active_level,
-                self.game.run.prize_bubble_level,
-            ) as u32,
-            ShopUpgrade::PrizeQuality => cycle_active_upgrade_level(
-                &mut self.game.run.prize_quality_enabled,
-                &mut self.game.run.prize_quality_active_level,
-                self.game.run.prize_quality_level,
-            ) as u32,
-            ShopUpgrade::Revival => u32::from(self.game.run.revive_enabled),
-            ShopUpgrade::LightningPower => cycle_active_upgrade_level(
-                &mut self.game.run.lightning_power_enabled,
-                &mut self.game.run.lightning_power_active_level,
-                self.game.run.lightning_power_level,
-            ) as u32,
-            ShopUpgrade::DrillPower => cycle_active_upgrade_level(
-                &mut self.game.run.drill_power_enabled,
-                &mut self.game.run.drill_power_active_level,
-                self.game.run.drill_power_level,
-            ) as u32,
-            ShopUpgrade::BankSight => cycle_active_upgrade_level(
-                &mut self.game.run.bank_sight_enabled,
-                &mut self.game.run.bank_sight_active_level,
-                self.game.run.bank_sight_level,
-            ) as u32,
-        }
-    }
-
-    fn disable_clean_start(&mut self) {
-        self.game.run.clean_start_enabled = false;
-        self.game.run.clean_start_active_level = 0;
-    }
-
-    fn disable_extra_rows(&mut self) {
-        self.game.run.extra_rows_enabled = false;
-        self.game.run.extra_rows_active_level = 0;
-    }
-
     #[cfg(debug_assertions)]
     fn debug_jump_to_shop(&mut self) {
         self.game.board = Board::empty();
@@ -1740,7 +1411,7 @@ impl CanvasRunner {
                 cost: 400,
                 level: self.game.run.color_call_charges,
                 active_level: self.game.run.color_call_charges,
-                max_level: None,
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.color_call_charges > 0,
                 enabled: self.game.run.color_call_enabled,
             },
@@ -1750,7 +1421,7 @@ impl CanvasRunner {
                 cost: 1200 + self.game.run.wild_orb_level as u64 * 600,
                 level: self.game.run.wild_orb_level as u32,
                 active_level: self.game.run.active_wild_orb_level() as u32,
-                max_level: Some(3),
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.wild_orb_level > 0,
                 enabled: self.game.run.active_wild_orb_level() > 0,
             },
@@ -1760,7 +1431,7 @@ impl CanvasRunner {
                 cost: 1700 + self.game.run.wild_cache_level as u64 * 800,
                 level: self.game.run.wild_cache_level as u32,
                 active_level: self.game.run.active_wild_cache_level() as u32,
-                max_level: Some(2),
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.wild_cache_level > 0,
                 enabled: self.game.run.active_wild_cache_level() > 0,
             },
@@ -1770,7 +1441,7 @@ impl CanvasRunner {
                 cost: 1400 + self.game.run.bomb_drop_level as u64 * 600,
                 level: self.game.run.bomb_drop_level as u32,
                 active_level: self.game.run.active_bomb_drop_level() as u32,
-                max_level: Some(3),
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.bomb_drop_level > 0,
                 enabled: self.game.run.active_bomb_drop_level() > 0,
             },
@@ -1780,7 +1451,7 @@ impl CanvasRunner {
                 cost: 1800 + self.game.run.bomb_radius_level as u64 * 900,
                 level: self.game.run.bomb_radius_level as u32,
                 active_level: self.game.run.active_bomb_radius_level() as u32,
-                max_level: Some(1),
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.bomb_radius_level > 0,
                 enabled: self.game.run.active_bomb_radius_level() > 0,
             },
@@ -1790,7 +1461,7 @@ impl CanvasRunner {
                 cost: 900,
                 level: self.game.run.bomb_shot_charges,
                 active_level: self.game.run.bomb_shot_charges,
-                max_level: None,
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.bomb_shot_charges > 0,
                 enabled: self.game.run.bomb_shot_charges > 0,
             },
@@ -1800,7 +1471,7 @@ impl CanvasRunner {
                 cost: 1000,
                 level: self.game.run.wild_shot_charges,
                 active_level: self.game.run.wild_shot_charges,
-                max_level: None,
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.wild_shot_charges > 0,
                 enabled: self.game.run.wild_shot_charges > 0,
             },
@@ -1810,7 +1481,7 @@ impl CanvasRunner {
                 cost: 1400,
                 level: self.game.run.lightning_charges,
                 active_level: self.game.run.lightning_charges,
-                max_level: None,
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.lightning_charges > 0,
                 enabled: self.game.run.lightning_charges > 0,
             },
@@ -1820,7 +1491,7 @@ impl CanvasRunner {
                 cost: 1600,
                 level: self.game.run.drill_charges,
                 active_level: self.game.run.drill_charges,
-                max_level: None,
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.drill_charges > 0,
                 enabled: self.game.run.drill_charges > 0,
             },
@@ -1830,7 +1501,7 @@ impl CanvasRunner {
                 cost: DROP_RESET_COST,
                 level: self.game.run.drop_reset_charges,
                 active_level: self.game.run.drop_reset_charges,
-                max_level: None,
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.drop_reset_charges > 0,
                 enabled: self.game.run.drop_reset_charges > 0,
             },
@@ -1840,7 +1511,7 @@ impl CanvasRunner {
                 cost: 900 + self.game.run.drop_delay_level as u64 * 400,
                 level: self.game.run.drop_delay_level as u32,
                 active_level: self.game.run.active_drop_delay_level() as u32,
-                max_level: Some(3),
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.drop_delay_level > 0,
                 enabled: self.game.run.active_drop_delay_level() > 0,
             },
@@ -1850,7 +1521,7 @@ impl CanvasRunner {
                 cost: 900 + self.game.run.drop_haste_level as u64 * 450,
                 level: self.game.run.drop_haste_level as u32,
                 active_level: self.game.run.active_drop_haste_level() as u32,
-                max_level: Some(3),
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.drop_haste_level > 0,
                 enabled: self.game.run.active_drop_haste_level() > 0,
             },
@@ -1860,7 +1531,7 @@ impl CanvasRunner {
                 cost: 1600,
                 level: self.game.run.pop_drop_level as u32,
                 active_level: self.game.run.active_pop_drop_level() as u32,
-                max_level: Some(1),
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.pop_drop_level > 0,
                 enabled: self.game.run.active_pop_drop_level() > 0,
             },
@@ -1870,7 +1541,7 @@ impl CanvasRunner {
                 cost: 1500 + self.game.run.clean_start_level as u64 * 800,
                 level: self.game.run.clean_start_level as u32,
                 active_level: self.game.run.active_clean_start_level() as u32,
-                max_level: Some(ROW_UPGRADE_LEVELS as u32),
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.clean_start_level > 0,
                 enabled: self.game.run.active_clean_start_level() > 0,
             },
@@ -1880,7 +1551,7 @@ impl CanvasRunner {
                 cost: 1200 + self.game.run.extra_rows_level as u64 * 700,
                 level: self.game.run.extra_rows_level as u32,
                 active_level: self.game.run.active_extra_rows_level() as u32,
-                max_level: Some(ROW_UPGRADE_LEVELS as u32),
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.extra_rows_level > 0,
                 enabled: self.game.run.active_extra_rows_level() > 0,
             },
@@ -1890,7 +1561,7 @@ impl CanvasRunner {
                 cost: 650 + self.game.run.queue_sight_level as u64 * 350,
                 level: self.game.run.queue_sight_level as u32,
                 active_level: self.game.run.active_queue_sight_level() as u32,
-                max_level: Some(3),
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.queue_sight_level > 0,
                 enabled: self.game.run.active_queue_sight_level() > 0,
             },
@@ -1900,7 +1571,7 @@ impl CanvasRunner {
                 cost: 950,
                 level: self.game.run.trace_sight_level as u32,
                 active_level: self.game.run.active_trace_sight_level() as u32,
-                max_level: Some(1),
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.trace_sight_level > 0,
                 enabled: self.game.run.active_trace_sight_level() > 0,
             },
@@ -1910,7 +1581,7 @@ impl CanvasRunner {
                 cost: 700 + self.game.run.reticle_level as u64 * 450,
                 level: self.game.run.reticle_level as u32,
                 active_level: self.game.run.active_reticle_level() as u32,
-                max_level: Some(2),
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.reticle_level > 0,
                 enabled: self.game.run.active_reticle_level() > 0,
             },
@@ -1920,7 +1591,7 @@ impl CanvasRunner {
                 cost: 850,
                 level: self.game.run.landing_dot_level as u32,
                 active_level: self.game.run.active_landing_dot_level() as u32,
-                max_level: Some(1),
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.landing_dot_level > 0,
                 enabled: self.game.run.active_landing_dot_level() > 0,
             },
@@ -1930,7 +1601,7 @@ impl CanvasRunner {
                 cost: 1500 + self.game.run.prize_bubble_level as u64 * 650,
                 level: self.game.run.prize_bubble_level as u32,
                 active_level: self.game.run.active_prize_bubble_level() as u32,
-                max_level: Some(3),
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.prize_bubble_level > 0,
                 enabled: self.game.run.active_prize_bubble_level() > 0,
             },
@@ -1940,7 +1611,7 @@ impl CanvasRunner {
                 cost: 1300 + self.game.run.prize_quality_level as u64 * 700,
                 level: self.game.run.prize_quality_level as u32,
                 active_level: self.game.run.active_prize_quality_level() as u32,
-                max_level: Some(3),
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.prize_quality_level > 0,
                 enabled: self.game.run.active_prize_quality_level() > 0,
             },
@@ -1950,7 +1621,7 @@ impl CanvasRunner {
                 cost: 2000,
                 level: self.game.run.revive_charges,
                 active_level: self.game.run.revive_charges,
-                max_level: None,
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.revive_charges > 0,
                 enabled: self.game.run.revive_enabled,
             },
@@ -1960,7 +1631,7 @@ impl CanvasRunner {
                 cost: 1700 + self.game.run.lightning_power_level as u64 * 800,
                 level: self.game.run.lightning_power_level as u32,
                 active_level: self.game.run.active_lightning_power_level() as u32,
-                max_level: Some(3),
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.lightning_power_level > 0,
                 enabled: self.game.run.active_lightning_power_level() > 0,
             },
@@ -1970,7 +1641,7 @@ impl CanvasRunner {
                 cost: 1500 + self.game.run.drill_power_level as u64 * 700,
                 level: self.game.run.drill_power_level as u32,
                 active_level: self.game.run.active_drill_power_level() as u32,
-                max_level: Some(3),
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.drill_power_level > 0,
                 enabled: self.game.run.active_drill_power_level() > 0,
             },
@@ -1980,7 +1651,7 @@ impl CanvasRunner {
                 cost: 700 + self.game.run.bank_sight_level as u64 * 300,
                 level: self.game.run.bank_sight_level as u32,
                 active_level: self.game.run.active_bank_sight_level() as u32,
-                max_level: Some(3),
+                max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.bank_sight_level > 0,
                 enabled: self.game.run.active_bank_sight_level() > 0,
             },
@@ -3839,36 +3510,6 @@ fn draw_wrapped_text(
         };
         let _ = context.fill_text(&line, x, y + index as f64 * line_height);
     }
-}
-
-fn cycle_active_upgrade_level(
-    enabled: &mut bool,
-    active_level: &mut u8,
-    purchased_level: u8,
-) -> u8 {
-    if purchased_level == 0 {
-        *enabled = false;
-        *active_level = 0;
-        return 0;
-    }
-
-    let current = if *enabled {
-        if *active_level == 0 {
-            purchased_level
-        } else {
-            (*active_level).min(purchased_level)
-        }
-    } else {
-        0
-    };
-    let next = if current >= purchased_level {
-        0
-    } else {
-        current + 1
-    };
-    *active_level = next;
-    *enabled = next > 0;
-    next
 }
 
 fn truncate_text(text: &str, max_width: f64, char_width: f64) -> String {

@@ -9,10 +9,11 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::{KeyboardEvent, MouseEvent};
 
 use crate::commands;
-use crate::game::GameLaunchView;
+use crate::games::GameLaunchView;
 use crate::nano_editor::NanoEditorPanel;
 use crate::save_manager::SaveManagerPanel;
 use crate::storage::{load_profile, save_profile};
+use crate::terminal::state::{CommandEffect, CommandExecution};
 use crate::terminal::{
     common_prefix, complete_terminal_tab, parse_ansi_fragments, parse_line, AnsiFragment,
     ConsolePipe, ConsoleScriptInvocation, FetchInvocation, OutputBlock, ParseError, ParsedCommand,
@@ -45,9 +46,8 @@ pub fn App() -> impl IntoView {
     let profile_ready = RwSignal::new(false);
     let terminal_focused = RwSignal::new(false);
 
-    // Profile hydration should be quick now that large assets preload after the
-    // initial UI. Keep command execution behind it so saved state cannot be
-    // overwritten by early edits.
+    // Keep command execution behind profile hydration so early edits cannot
+    // overwrite stored state. Word assets load independently on game demand.
     spawn_local(async move {
         let error = match load_profile().await {
             Ok(profile) => {
@@ -142,31 +142,19 @@ pub fn App() -> impl IntoView {
         } else {
             ctx.with(|ctx| format!("{} {}", format_prompt(ctx.cwd()), line))
         };
-        let mut output = Vec::new();
-        let mut clear_requested = false;
-        let mut python_requested = false;
-        let mut pip_request = None;
-        let mut console_script_request = None;
-        let mut fetch_request = None;
-        let mut python_file_request = None;
-        let mut console_pipe_request = None;
+        let mut execution = CommandExecution::default();
         let mut profile = None;
 
         set_ctx.update(|ctx| {
             if !quiet_run {
                 ctx.record_history(&line);
             }
-            output = run_shell_line(ctx, &line);
+            execution = run_shell_line(ctx, &line);
             ctx.sync_profile_from_runtime();
-            clear_requested = ctx.take_clear_requested();
-            python_requested = ctx.take_python_requested();
-            pip_request = ctx.take_pip_request();
-            console_script_request = ctx.take_console_script_request();
-            fetch_request = ctx.take_fetch_request();
-            python_file_request = ctx.take_python_file_request();
-            console_pipe_request = ctx.take_console_pipe_request();
             profile = Some(ctx.profile().clone());
         });
+
+        let CommandExecution { output, effect } = execution;
 
         if output_launches_game(&output) {
             close_open_games(transcript);
@@ -177,47 +165,44 @@ pub fn App() -> impl IntoView {
             persist_profile(profile, transcript, next_id);
         }
 
-        if let Some(packages) = pip_request {
-            run_pip_install(ctx, set_ctx, transcript, next_id, packages);
-        }
-
-        if let Some(invocation) = console_script_request {
-            let entry_id = append_entry(transcript, next_id, prompt, output);
-            run_console_script(ctx, set_ctx, transcript, next_id, entry_id, invocation);
-            return;
-        }
-
-        if let Some(invocation) = fetch_request {
-            let entry_id = append_entry(transcript, next_id, prompt, output);
-            run_fetch(set_ctx, transcript, next_id, entry_id, invocation);
-            return;
-        }
-
-        if let Some(invocation) = python_file_request {
-            let entry_id = append_entry(transcript, next_id, prompt, output);
-            run_python_file(ctx, set_ctx, transcript, next_id, entry_id, invocation);
-            return;
-        }
-
-        if let Some(pipe) = console_pipe_request {
-            let entry_id = append_entry(transcript, next_id, prompt, output);
-            run_console_pipe(ctx, set_ctx, transcript, next_id, entry_id, pipe);
-            return;
-        }
-
-        if clear_requested {
-            transcript.set(Vec::new());
-            if output.is_empty() {
+        match effect {
+            Some(CommandEffect::PipInstall(packages)) => {
+                run_pip_install(ctx, set_ctx, transcript, next_id, packages);
+            }
+            Some(CommandEffect::ConsoleScript(invocation)) => {
+                let entry_id = append_entry(transcript, next_id, prompt, output);
+                run_console_script(ctx, set_ctx, transcript, next_id, entry_id, invocation);
                 return;
             }
-        }
-
-        if python_requested {
-            python_mode.set(true);
-            // Pre-warm the runtime so the first prompt isn't blocked on the download.
-            spawn_local(async {
-                let _ = crate::python::ensure_loaded().await;
-            });
+            Some(CommandEffect::Fetch(invocation)) => {
+                let entry_id = append_entry(transcript, next_id, prompt, output);
+                run_fetch(set_ctx, transcript, next_id, entry_id, invocation);
+                return;
+            }
+            Some(CommandEffect::PythonFile(invocation)) => {
+                let entry_id = append_entry(transcript, next_id, prompt, output);
+                run_python_file(ctx, set_ctx, transcript, next_id, entry_id, invocation);
+                return;
+            }
+            Some(CommandEffect::ConsolePipe(pipe)) => {
+                let entry_id = append_entry(transcript, next_id, prompt, output);
+                run_console_pipe(ctx, set_ctx, transcript, next_id, entry_id, pipe);
+                return;
+            }
+            Some(CommandEffect::Clear) => {
+                transcript.set(Vec::new());
+                if output.is_empty() {
+                    return;
+                }
+            }
+            Some(CommandEffect::EnterPython) => {
+                python_mode.set(true);
+                // Pre-warm the runtime so the first prompt isn't blocked on the download.
+                crate::python::spawn_job(|| async {
+                    let _ = crate::python::ensure_loaded().await;
+                });
+            }
+            None => {}
         }
 
         // A quiet command (from `.rc`) with no output adds nothing to the screen.
@@ -400,7 +385,7 @@ pub fn App() -> impl IntoView {
         if key == "Tab" && python_mode.get_untracked() {
             ev.prevent_default();
             let line = command_input.get_untracked();
-            spawn_local(async move {
+            crate::python::spawn_job(move || async move {
                 let Ok(completion) = crate::python::complete(&line).await else {
                     return;
                 };
@@ -495,6 +480,7 @@ pub fn App() -> impl IntoView {
                         <textarea
                             id="terminal-command"
                             class="terminal-input"
+                            disabled={move || !profile_ready.get()}
                             rows={move || command_input.with(|value| value.matches('\n').count() + 1).to_string()}
                             autocomplete="off"
                             autocapitalize="none"
@@ -507,7 +493,13 @@ pub fn App() -> impl IntoView {
                             }}
                             on:keydown=handle_command_keydown
                         ></textarea>
-                        <button class="terminal-submit" type="submit">"Run"</button>
+                        <button
+                            class="terminal-submit"
+                            type="submit"
+                            disabled={move || !profile_ready.get()}
+                        >
+                            "Run"
+                        </button>
                     </form>
                 </div>
             </section>
@@ -610,7 +602,7 @@ fn format_interrupt_prompt(cwd: &str, input: &str) -> String {
     }
 }
 
-fn run_shell_line(ctx: &mut TerminalContext, line: &str) -> Vec<OutputBlock> {
+fn run_shell_line(ctx: &mut TerminalContext, line: &str) -> CommandExecution {
     match parse_line(line) {
         Ok(parsed) if parsed.stdout_redirect.is_some() && parsed.pipeline.stages.len() == 1 => {
             run_redirected_command(
@@ -619,9 +611,9 @@ fn run_shell_line(ctx: &mut TerminalContext, line: &str) -> Vec<OutputBlock> {
                 parsed.stdout_redirect.unwrap(),
             )
         }
-        Ok(parsed) if parsed.stdout_redirect.is_some() => vec![OutputBlock::Error(
-            "Redirection only supports a single built-in command.".to_string(),
-        )],
+        Ok(parsed) if parsed.stdout_redirect.is_some() => {
+            command_error("Redirection only supports a single built-in command.")
+        }
         Ok(parsed) if parsed.pipeline.stages.len() == 1 => {
             commands::run_parsed(ctx, parsed.pipeline.stages.into_iter().next().unwrap())
         }
@@ -631,59 +623,50 @@ fn run_shell_line(ctx: &mut TerminalContext, line: &str) -> Vec<OutputBlock> {
             let second = stages.next().unwrap();
             run_text_pipe(ctx, first, second)
         }
-        Ok(_) => vec![OutputBlock::Error(
-            "Only one pipe is supported right now.".to_string(),
-        )],
-        Err(ParseError::Empty) => Vec::new(),
+        Ok(_) => command_error("Only one pipe is supported right now."),
+        Err(ParseError::Empty) => CommandExecution::default(),
         Err(ParseError::TrailingEscape) => {
-            vec![OutputBlock::Error(
-                "Command ended with an unfinished escape.".to_string(),
-            )]
+            command_error("Command ended with an unfinished escape.")
         }
-        Err(ParseError::UnterminatedQuote(quote)) => vec![OutputBlock::Error(format!(
-            "Unterminated {} quote.",
-            quote_name(quote)
-        ))],
-        Err(ParseError::EmptyPipelineStage) => {
-            vec![OutputBlock::Error("Empty pipeline stage.".to_string())]
+        Err(ParseError::UnterminatedQuote(quote)) => {
+            command_error(format!("Unterminated {} quote.", quote_name(quote)))
         }
-        Err(ParseError::EmptyRedirectTarget) => vec![OutputBlock::Error(
-            "Output redirection needs exactly one target path.".to_string(),
-        )],
-        Err(ParseError::UnsupportedRedirect) => vec![OutputBlock::Error(
-            "Only simple '>' output redirection to one file is supported.".to_string(),
-        )],
+        Err(ParseError::EmptyPipelineStage) => command_error("Empty pipeline stage."),
+        Err(ParseError::EmptyRedirectTarget) => {
+            command_error("Output redirection needs exactly one target path.")
+        }
+        Err(ParseError::UnsupportedRedirect) => {
+            command_error("Only simple '>' output redirection to one file is supported.")
+        }
     }
+}
+
+fn command_error(message: impl Into<String>) -> CommandExecution {
+    CommandExecution::from_output(vec![OutputBlock::Error(message.into())])
 }
 
 fn run_redirected_command(
     ctx: &mut TerminalContext,
     command: ParsedCommand,
     path: String,
-) -> Vec<OutputBlock> {
+) -> CommandExecution {
     let cwd = ctx.cwd().to_string();
-    let output = commands::run_parsed(ctx, command);
-    if ctx.take_console_script_request().is_some()
-        || ctx.take_fetch_request().is_some()
-        || ctx.take_pip_request().is_some()
-        || ctx.take_python_requested()
-    {
-        return vec![OutputBlock::Error(
-            "Only built-in text commands can be redirected.".to_string(),
-        )];
+    let execution = commands::run_parsed(ctx, command);
+    if execution.effect.is_some() {
+        return command_error("Only built-in text commands can be redirected.");
     }
 
-    let text = match redirect_text(output) {
+    let text = match redirect_text(execution.output) {
         Ok(text) => text,
-        Err(block) => return vec![block],
+        Err(block) => return CommandExecution::from_output(vec![block]),
     };
 
     match ctx.vfs_mut().write_file(&cwd, &path, text) {
         Ok(()) => {
             ctx.sync_profile_from_runtime();
-            Vec::new()
+            CommandExecution::default()
         }
-        Err(err) => vec![OutputBlock::Error(err.to_string())],
+        Err(err) => command_error(err.to_string()),
     }
 }
 
@@ -691,46 +674,74 @@ fn run_text_pipe(
     ctx: &mut TerminalContext,
     first: ParsedCommand,
     second: ParsedCommand,
-) -> Vec<OutputBlock> {
-    let output = commands::run_parsed(ctx, first);
+) -> CommandExecution {
+    let execution = commands::run_parsed(ctx, first);
     // An async producer (`cowsay hi | lolcat`, `python3 g.py | lolcat`) defers the
     // whole pipe to the async layer, feeding its stdout into the consumer.
-    if let Some(producer) = ctx.take_console_script_request() {
-        ctx.request_console_pipe(crate::terminal::PipeProducer::Script(producer), second);
-        return Vec::new();
-    }
-    if let Some(file) = ctx.take_python_file_request() {
-        ctx.request_console_pipe(crate::terminal::PipeProducer::File(file), second);
-        return Vec::new();
-    }
-    if ctx.take_fetch_request().is_some()
-        || ctx.take_pip_request().is_some()
-        || ctx.take_python_requested()
-    {
-        return vec![OutputBlock::Error(
-            "That command can't feed a pipe.".to_string(),
-        )];
+    match execution.effect {
+        Some(CommandEffect::ConsoleScript(producer)) => {
+            return CommandExecution::new(
+                Vec::new(),
+                Some(CommandEffect::ConsolePipe(ConsolePipe {
+                    producer: crate::terminal::PipeProducer::Script(producer),
+                    consumer: second,
+                })),
+            );
+        }
+        Some(CommandEffect::PythonFile(file)) => {
+            return CommandExecution::new(
+                Vec::new(),
+                Some(CommandEffect::ConsolePipe(ConsolePipe {
+                    producer: crate::terminal::PipeProducer::File(file),
+                    consumer: second,
+                })),
+            );
+        }
+        Some(_) => return command_error("That command can't feed a pipe."),
+        None => {}
     }
 
-    let stdin = match pipe_text(output) {
+    let stdin = match pipe_text(execution.output) {
         Ok(stdin) => stdin,
-        Err(block) => return vec![block],
+        Err(block) => return CommandExecution::from_output(vec![block]),
     };
 
     if ctx.has_console_script(&second.name) {
-        ctx.request_console_script(second.name, second.args, Some(stdin));
-        return Vec::new();
+        return CommandExecution::new(
+            Vec::new(),
+            Some(CommandEffect::ConsoleScript(ConsoleScriptInvocation {
+                name: second.name,
+                args: second.args,
+                stdin: Some(stdin),
+            })),
+        );
     }
 
     if commands::find_command(&commands::registry(), &second.name).is_some() {
-        ctx.set_stdin(stdin);
-        return commands::run_parsed(ctx, second);
+        return run_builtin_pipe_consumer(ctx, second, stdin);
     }
 
-    vec![OutputBlock::Error(format!(
+    command_error(format!(
         "Unknown command '{}'. Type 'help' to see available commands.",
         second.name
-    ))]
+    ))
+}
+
+fn run_builtin_pipe_consumer(
+    ctx: &mut TerminalContext,
+    consumer: ParsedCommand,
+    stdin: String,
+) -> CommandExecution {
+    ctx.set_stdin(stdin);
+    let execution = commands::run_parsed(ctx, consumer);
+    // Commands that do not accept stdin must not leave it for a later command.
+    ctx.take_stdin();
+
+    if execution.effect.is_some() {
+        command_error("That command can't consume a pipe.")
+    } else {
+        execution
+    }
 }
 
 fn pipe_text(output: Vec<OutputBlock>) -> Result<String, OutputBlock> {
@@ -1043,6 +1054,66 @@ fn repl_echo(source: &str) -> String {
         .join("\n")
 }
 
+async fn prepare_python_job(ctx: ReadSignal<TerminalContext>) -> Result<(), String> {
+    crate::python::ensure_loaded().await?;
+    let (files, dirs, cwd) = ctx.with_untracked(|ctx| {
+        (
+            ctx.vfs().managed_files(),
+            ctx.vfs().managed_dirs(),
+            ctx.cwd().to_string(),
+        )
+    });
+    crate::python::sync_to_pyodide(&files, &dirs, &cwd).await
+}
+
+/// Reconcile the runtime while this job still owns the Python queue, then wait
+/// for its profile save before allowing the next job to read terminal state.
+async fn finish_python_job(
+    set_ctx: WriteSignal<TerminalContext>,
+    transcript: RwSignal<Vec<TerminalEntry>>,
+    next_id: RwSignal<usize>,
+) {
+    let changes = match crate::python::sync_from_pyodide().await {
+        Ok(changes) => Some(changes),
+        Err(err) => {
+            append_entry(
+                transcript,
+                next_id,
+                "fs sync".to_string(),
+                vec![OutputBlock::Error(err)],
+            );
+            None
+        }
+    };
+
+    let mut profile = None;
+    set_ctx.update(|ctx| {
+        for change in changes.into_iter().flatten() {
+            match change {
+                crate::python::FsChange::Mkdir(path) => ctx.vfs_mut().apply_external_mkdir(&path),
+                crate::python::FsChange::Write(path, content) => {
+                    ctx.vfs_mut().apply_external_write(&path, content)
+                }
+                crate::python::FsChange::Remove(path) => ctx.vfs_mut().apply_external_remove(&path),
+            }
+        }
+        ctx.sync_profile_from_runtime();
+        profile = Some(ctx.profile().clone());
+    });
+
+    let Some(profile) = profile else {
+        return;
+    };
+    if let Err(err) = save_profile(&profile).await {
+        append_entry(
+            transcript,
+            next_id,
+            "system".to_string(),
+            vec![OutputBlock::Error(format!("Profile save failed: {err}"))],
+        );
+    }
+}
+
 /// Evaluate a whole (possibly multiline) Python submission. An incomplete block
 /// is put back in the input with a trailing newline so the user keeps editing
 /// it; a complete one is echoed and run, sharing the terminal's filesystem.
@@ -1071,16 +1142,8 @@ fn submit_python(
         return;
     }
 
-    let (files, dirs, cwd) = ctx.with_untracked(|ctx| {
-        (
-            ctx.vfs().managed_files(),
-            ctx.vfs().managed_dirs(),
-            ctx.cwd().to_string(),
-        )
-    });
-
-    spawn_local(async move {
-        if let Err(err) = crate::python::sync_to_pyodide(&files, &dirs, &cwd).await {
+    crate::python::spawn_job(move || async move {
+        if let Err(err) = prepare_python_job(ctx).await {
             append_entry(
                 transcript,
                 next_id,
@@ -1098,12 +1161,7 @@ fn submit_python(
             }
             Ok(crate::python::Eval::Complete(text)) => {
                 set_ctx.update(|ctx| ctx.record_python_history(source.trim()));
-                persist_profile(
-                    ctx.with_untracked(|ctx| ctx.profile().clone()),
-                    transcript,
-                    next_id,
-                );
-                apply_python_fs_changes(set_ctx, transcript, next_id).await;
+                finish_python_job(set_ctx, transcript, next_id).await;
                 let output = if text.trim_end().is_empty() {
                     Vec::new()
                 } else {
@@ -1113,11 +1171,7 @@ fn submit_python(
             }
             Err(err) => {
                 set_ctx.update(|ctx| ctx.record_python_history(source.trim()));
-                persist_profile(
-                    ctx.with_untracked(|ctx| ctx.profile().clone()),
-                    transcript,
-                    next_id,
-                );
+                finish_python_job(set_ctx, transcript, next_id).await;
                 append_entry(
                     transcript,
                     next_id,
@@ -1139,25 +1193,8 @@ fn run_pip_install(
     next_id: RwSignal<usize>,
     packages: Vec<String>,
 ) {
-    let (files, dirs, cwd) = ctx.with_untracked(|ctx| {
-        (
-            ctx.vfs().managed_files(),
-            ctx.vfs().managed_dirs(),
-            ctx.cwd().to_string(),
-        )
-    });
-
-    spawn_local(async move {
-        if let Err(err) = crate::python::ensure_loaded().await {
-            append_entry(
-                transcript,
-                next_id,
-                String::new(),
-                vec![OutputBlock::Error(err)],
-            );
-            return;
-        }
-        if let Err(err) = crate::python::sync_to_pyodide(&files, &dirs, &cwd).await {
+    crate::python::spawn_job(move || async move {
+        if let Err(err) = prepare_python_job(ctx).await {
             append_entry(
                 transcript,
                 next_id,
@@ -1173,7 +1210,7 @@ fn run_pip_install(
         };
         // Surface installed files regardless of outcome (a partial install still
         // wrote some), then report the log.
-        apply_python_fs_changes(set_ctx, transcript, next_id).await;
+        finish_python_job(set_ctx, transcript, next_id).await;
         append_entry(transcript, next_id, String::new(), vec![block]);
     });
 }
@@ -1188,20 +1225,8 @@ fn run_console_script(
     entry_id: usize,
     invocation: ConsoleScriptInvocation,
 ) {
-    let (files, dirs, cwd) = ctx.with_untracked(|ctx| {
-        (
-            ctx.vfs().managed_files(),
-            ctx.vfs().managed_dirs(),
-            ctx.cwd().to_string(),
-        )
-    });
-
-    spawn_local(async move {
-        if let Err(err) = crate::python::ensure_loaded().await {
-            set_entry_output(transcript, entry_id, vec![OutputBlock::Error(err)]);
-            return;
-        }
-        if let Err(err) = crate::python::sync_to_pyodide(&files, &dirs, &cwd).await {
+    crate::python::spawn_job(move || async move {
+        if let Err(err) = prepare_python_job(ctx).await {
             set_entry_output(transcript, entry_id, vec![OutputBlock::Error(err)]);
             return;
         }
@@ -1218,7 +1243,7 @@ fn run_console_script(
             Err(output) => Some(OutputBlock::Error(output)),
         };
 
-        apply_python_fs_changes(set_ctx, transcript, next_id).await;
+        finish_python_job(set_ctx, transcript, next_id).await;
         set_entry_output(transcript, entry_id, block.into_iter().collect());
     });
 }
@@ -1231,20 +1256,8 @@ fn run_python_file(
     entry_id: usize,
     invocation: PythonFileInvocation,
 ) {
-    let (files, dirs, cwd) = ctx.with_untracked(|ctx| {
-        (
-            ctx.vfs().managed_files(),
-            ctx.vfs().managed_dirs(),
-            ctx.cwd().to_string(),
-        )
-    });
-
-    spawn_local(async move {
-        if let Err(err) = crate::python::ensure_loaded().await {
-            set_entry_output(transcript, entry_id, vec![OutputBlock::Error(err)]);
-            return;
-        }
-        if let Err(err) = crate::python::sync_to_pyodide(&files, &dirs, &cwd).await {
+    crate::python::spawn_job(move || async move {
+        if let Err(err) = prepare_python_job(ctx).await {
             set_entry_output(transcript, entry_id, vec![OutputBlock::Error(err)]);
             return;
         }
@@ -1255,14 +1268,14 @@ fn run_python_file(
             Err(output) => Some(OutputBlock::Error(output)),
         };
 
-        apply_python_fs_changes(set_ctx, transcript, next_id).await;
+        finish_python_job(set_ctx, transcript, next_id).await;
         set_entry_output(transcript, entry_id, block.into_iter().collect());
     });
 }
 
 /// Run a `<console-script> | <command>` pipe asynchronously: run the producer
 /// console script, then feed its stdout as stdin into the consumer (another
-/// console script, or a built-in via `set_stdin`).
+/// console script, or a built-in through the typed command boundary).
 fn run_console_pipe(
     ctx: ReadSignal<TerminalContext>,
     set_ctx: WriteSignal<TerminalContext>,
@@ -1271,20 +1284,8 @@ fn run_console_pipe(
     entry_id: usize,
     pipe: ConsolePipe,
 ) {
-    let (files, dirs, cwd) = ctx.with_untracked(|ctx| {
-        (
-            ctx.vfs().managed_files(),
-            ctx.vfs().managed_dirs(),
-            ctx.cwd().to_string(),
-        )
-    });
-
-    spawn_local(async move {
-        if let Err(err) = crate::python::ensure_loaded().await {
-            set_entry_output(transcript, entry_id, vec![OutputBlock::Error(err)]);
-            return;
-        }
-        if let Err(err) = crate::python::sync_to_pyodide(&files, &dirs, &cwd).await {
+    crate::python::spawn_job(move || async move {
+        if let Err(err) = prepare_python_job(ctx).await {
             set_entry_output(transcript, entry_id, vec![OutputBlock::Error(err)]);
             return;
         }
@@ -1298,36 +1299,38 @@ fn run_console_pipe(
                 crate::python::run_python_file(&f.path, &f.args).await
             }
         };
-        let mut stdin = match produced {
-            Ok(text) => text,
-            Err(err) => {
-                set_entry_output(transcript, entry_id, vec![OutputBlock::Error(err)]);
-                return;
+        let blocks = match produced {
+            Err(err) => vec![OutputBlock::Error(err)],
+            Ok(mut stdin) => {
+                if !stdin.is_empty() && !stdin.ends_with('\n') {
+                    stdin.push('\n');
+                }
+                let consumer_is_script =
+                    ctx.with_untracked(|ctx| ctx.has_console_script(&consumer.name));
+                if consumer_is_script {
+                    match crate::python::run_console_script(
+                        &consumer.name,
+                        &consumer.args,
+                        Some(&stdin),
+                    )
+                    .await
+                    {
+                        Ok(text) if text.is_empty() => Vec::new(),
+                        Ok(text) => vec![OutputBlock::Text(text)],
+                        Err(text) => vec![OutputBlock::Error(text)],
+                    }
+                } else {
+                    let mut blocks = Vec::new();
+                    set_ctx.update(|ctx| {
+                        blocks =
+                            run_builtin_pipe_consumer(ctx, consumer.clone(), stdin.clone()).output;
+                    });
+                    blocks
+                }
             }
         };
-        if !stdin.is_empty() && !stdin.ends_with('\n') {
-            stdin.push('\n');
-        }
 
-        let consumer_is_script = ctx.with_untracked(|ctx| ctx.has_console_script(&consumer.name));
-        let blocks = if consumer_is_script {
-            match crate::python::run_console_script(&consumer.name, &consumer.args, Some(&stdin))
-                .await
-            {
-                Ok(text) if text.is_empty() => Vec::new(),
-                Ok(text) => vec![OutputBlock::Text(text)],
-                Err(text) => vec![OutputBlock::Error(text)],
-            }
-        } else {
-            let mut blocks = Vec::new();
-            set_ctx.update(|ctx| {
-                ctx.set_stdin(stdin.clone());
-                blocks = commands::run_parsed(ctx, consumer.clone());
-            });
-            blocks
-        };
-
-        apply_python_fs_changes(set_ctx, transcript, next_id).await;
+        finish_python_job(set_ctx, transcript, next_id).await;
         set_entry_output(transcript, entry_id, blocks);
     });
 }
@@ -1368,49 +1371,6 @@ fn run_fetch(
         };
         set_entry_output(transcript, entry_id, vec![block]);
     });
-}
-
-/// Read back any filesystem changes Python made and apply them to the overlay,
-/// then persist. A persistence failure is surfaced as its own transcript entry.
-async fn apply_python_fs_changes(
-    set_ctx: WriteSignal<TerminalContext>,
-    transcript: RwSignal<Vec<TerminalEntry>>,
-    next_id: RwSignal<usize>,
-) {
-    let changes = match crate::python::sync_from_pyodide().await {
-        Ok(changes) => changes,
-        Err(err) => {
-            append_entry(
-                transcript,
-                next_id,
-                "fs sync".to_string(),
-                vec![OutputBlock::Error(err)],
-            );
-            return;
-        }
-    };
-    if changes.is_empty() {
-        return;
-    }
-
-    let mut profile = None;
-    set_ctx.update(|ctx| {
-        for change in changes {
-            match change {
-                crate::python::FsChange::Mkdir(path) => ctx.vfs_mut().apply_external_mkdir(&path),
-                crate::python::FsChange::Write(path, content) => {
-                    ctx.vfs_mut().apply_external_write(&path, content)
-                }
-                crate::python::FsChange::Remove(path) => ctx.vfs_mut().apply_external_remove(&path),
-            }
-        }
-        ctx.sync_profile_from_runtime();
-        profile = Some(ctx.profile().clone());
-    });
-
-    if let Some(profile) = profile {
-        persist_profile(profile, transcript, next_id);
-    }
 }
 
 #[component]
@@ -1573,16 +1533,16 @@ mod tests {
         let mut ctx = TerminalContext::new();
         install_lolcat_metadata(&mut ctx);
 
-        let output = run_shell_line(&mut ctx, r#"echo "hi there" | lolcat --seed 7"#);
+        let execution = run_shell_line(&mut ctx, r#"echo "hi there" | lolcat --seed 7"#);
 
-        assert!(output.is_empty());
+        assert!(execution.output.is_empty());
         assert_eq!(
-            ctx.take_console_script_request(),
-            Some(ConsoleScriptInvocation {
+            execution.effect,
+            Some(CommandEffect::ConsoleScript(ConsoleScriptInvocation {
                 name: "lolcat".to_string(),
                 args: vec!["--seed".to_string(), "7".to_string()],
                 stdin: Some("hi there\n".to_string()),
-            })
+            }))
         );
     }
 
@@ -1592,7 +1552,7 @@ mod tests {
         install_lolcat_metadata(&mut ctx);
 
         assert_eq!(
-            run_shell_line(&mut ctx, "nano draft.md | lolcat"),
+            run_shell_line(&mut ctx, "nano draft.md | lolcat").output,
             vec![OutputBlock::Error(
                 "That output cannot be piped yet.".to_string()
             )]
@@ -1603,9 +1563,9 @@ mod tests {
     fn redirect_writes_text_output_to_user_file() {
         let mut ctx = TerminalContext::new();
 
-        let output = run_shell_line(&mut ctx, r#"echo "hello world" > test.txt"#);
+        let execution = run_shell_line(&mut ctx, r#"echo "hello world" > test.txt"#);
 
-        assert!(output.is_empty());
+        assert_eq!(execution, CommandExecution::default());
         assert_eq!(
             ctx.vfs().read_file("/root", "test.txt").unwrap().content,
             "hello world"
@@ -1617,7 +1577,7 @@ mod tests {
         let mut ctx = TerminalContext::new();
 
         assert_eq!(
-            run_shell_line(&mut ctx, "nano draft.md > out.txt"),
+            run_shell_line(&mut ctx, "nano draft.md > out.txt").output,
             vec![OutputBlock::Error(
                 "That output cannot be redirected yet.".to_string()
             )]
@@ -1630,17 +1590,90 @@ mod tests {
         let mut ctx = TerminalContext::new();
 
         assert_eq!(
-            run_shell_line(&mut ctx, "echo hello >"),
+            run_shell_line(&mut ctx, "echo hello >").output,
             vec![OutputBlock::Error(
                 "Output redirection needs exactly one target path.".to_string()
             )]
         );
         assert_eq!(
-            run_shell_line(&mut ctx, "echo hello > out.txt extra"),
+            run_shell_line(&mut ctx, "echo hello > out.txt extra").output,
             vec![OutputBlock::Error(
                 "Only simple '>' output redirection to one file is supported.".to_string()
             )]
         );
+    }
+
+    #[test]
+    fn redirected_python_file_effect_is_rejected_and_cannot_run_later() {
+        let mut ctx = TerminalContext::new();
+        ctx.vfs_mut()
+            .write_file("/root", "file.py", "print('should not run')")
+            .unwrap();
+
+        let redirected = run_shell_line(&mut ctx, "python3 file.py > out");
+
+        assert_eq!(
+            redirected.output,
+            vec![OutputBlock::Error(
+                "Only built-in text commands can be redirected.".to_string()
+            )]
+        );
+        assert_eq!(redirected.effect, None);
+        assert!(!ctx.vfs().has_file("/root/out"));
+
+        let next = run_shell_line(&mut ctx, "echo next");
+        assert_eq!(next.output, vec![OutputBlock::Text("next".to_string())]);
+        assert_eq!(next.effect, None);
+    }
+
+    #[test]
+    fn async_pipe_consumer_cannot_leak_fetch_into_next_command() {
+        let mut ctx = TerminalContext::new();
+        install_lolcat_metadata(&mut ctx);
+
+        let pipe = run_shell_line(&mut ctx, "lolcat hello | curl https://example.com");
+        let Some(CommandEffect::ConsolePipe(pipe)) = pipe.effect else {
+            panic!("expected async pipe effect");
+        };
+
+        let consumer = run_builtin_pipe_consumer(&mut ctx, pipe.consumer, "produced\n".to_string());
+        assert_eq!(
+            consumer.output,
+            vec![OutputBlock::Error(
+                "That command can't consume a pipe.".to_string()
+            )]
+        );
+        assert_eq!(consumer.effect, None);
+        assert_eq!(ctx.take_stdin(), None);
+
+        let next = run_shell_line(&mut ctx, "echo next");
+        assert_eq!(next.output, vec![OutputBlock::Text("next".to_string())]);
+        assert_eq!(next.effect, None);
+    }
+
+    #[test]
+    fn sh_reports_async_effects_without_leaking_them() {
+        let mut ctx = TerminalContext::new();
+        ctx.vfs_mut()
+            .write_file(
+                "/root",
+                "requests.sh",
+                "curl https://example.com\necho still-running",
+            )
+            .unwrap();
+
+        let execution = run_shell_line(&mut ctx, "sh requests.sh");
+
+        assert_eq!(
+            execution.output,
+            vec![
+                OutputBlock::Error(
+                    "sh: a network request is not supported in shell scripts.".to_string()
+                ),
+                OutputBlock::Text("still-running".to_string()),
+            ]
+        );
+        assert_eq!(execution.effect, None);
     }
 
     #[test]

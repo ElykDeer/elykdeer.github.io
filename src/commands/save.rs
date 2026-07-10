@@ -9,11 +9,11 @@ impl Command for SaveCommand {
     }
 
     fn summary(&self) -> &'static str {
-        "Open save, restore, and offline snapshot tools."
+        "Open save, restore, and page-backup tools."
     }
 
     fn long_help(&self) -> &'static str {
-        "Usage: save\n\nOpens the save box for downloading save data, restoring from a save file, or downloading an HTML page snapshot with the save data embedded."
+        "Usage: save\n\nOpens the save box for downloading save data, restoring from a save file, or downloading an HTML page backup with the save data embedded."
     }
 
     fn run(&self, _ctx: &mut TerminalContext, args: &[String]) -> CommandResult {
