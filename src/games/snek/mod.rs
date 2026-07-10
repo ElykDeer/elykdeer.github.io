@@ -1,3 +1,4 @@
+mod navigation;
 mod state;
 mod view;
 
