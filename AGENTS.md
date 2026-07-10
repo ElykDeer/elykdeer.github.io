@@ -42,7 +42,7 @@ main context focused:
 - Send only the task-specific architecture, constraints, and file paths an agent
   needs. Do not copy the entire conversation into every assignment.
 - Keep the critical path and cross-cutting decisions in the main agent. Review
-  every returned patch and run the complete repository gate after integration.
+  every returned patch and run the appropriate repository checks after integration.
 - Close completed agents promptly. Do not duplicate work already delegated.
 - Keep this file and related docs current whenever stable architecture, workflow,
   persistence, asset, or release conventions change.
@@ -173,19 +173,23 @@ layouts for overlap and text clipping.
 
 ## Required Validation
 
-Run focused tests while developing. Before a ship-ready commit, run the GitHub
-Actions build once rather than first repeating all of its commands by hand:
+Run focused tests while developing. Before a ship-ready commit, run the relevant
+checks with the native host toolchain, outside Docker, so each target/profile is
+compiled only when the change warrants it. The usual Rust gate is:
 
 ```sh
-act -j build
+cargo fmt --check
+cargo test
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-`act -j build` runs `.github/workflows/deploy.yml` locally in its container and
-is the single canonical full gate: formatting, tests, WASM check, strict Clippy,
-word asset validation, release build, and release-artifact checks. Do not
-habitually run the complete sequence both manually and through `act`. If `act` is
-unavailable, run the workflow commands from the YAML individually and report
-that the containerized workflow itself was not exercised.
+Add `cargo check --target wasm32-unknown-unknown` for browser-bound Rust changes,
+`python3 scripts/check_word_assets.py` for word-asset changes, and a pinned Trunk
+release build plus release-artifact checks for release-bound UI or debug-gating
+changes. Use `act -j build` only when `.github/workflows/deploy.yml`, deployment
+packaging, or the equivalence of the complete CI gate itself changed and local
+workflow emulation is specifically useful. Do not substitute Dockerized checks
+for available host tools or rerun equivalent checks merely for ceremony.
 
 The workflow publishes `dist/` to GitHub Pages and restores `CNAME`. Agents may
 inspect existing remote runs with `gh run list` / `gh run view`, but must not

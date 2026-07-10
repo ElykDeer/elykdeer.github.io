@@ -27,15 +27,19 @@ trunk build --release
 
 ## Test It
 
-Run the same build job used by GitHub Pages:
+Run focused checks while developing, then the relevant gate with the native host
+toolchain before a ship-ready commit:
 
 ```sh
-act -j build
+cargo fmt --check
+cargo test
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-Use targeted `cargo test <filter>` and `cargo clippy --all-targets --all-features -- -D warnings`
-while developing; there is no need to repeat the full workflow command list
-before running `act`.
+Add the WASM check, word-asset verifier, or pinned Trunk release build when the
+changed surface needs them. Reserve `act -j build` for changes to the GitHub
+Actions workflow or deployment packaging when local workflow emulation is
+specifically useful; normal validation should run outside containers.
 
 ## Project Layout
 
