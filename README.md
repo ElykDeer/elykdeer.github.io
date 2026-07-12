@@ -59,4 +59,8 @@ Runtime profile state lives in IndexedDB; current game saves use local storage a
 
 WordHunt and Textropolis share `wordlist.json.gz` and `dictionary.json.gz`. The tiny `word-assets.json` manifest contains their content-hash version, so browsers reuse unchanged assets. Generated uncompressed dictionaries and audit reports are intentionally ignored.
 
-Snek is experimental and compiled only in debug builds. Release builds also omit all cheat controls.
+Snek is experimental and compiled only when debug assertions are enabled.
+Release builds also omit all cheat controls. For an optimized phone-test
+artifact that includes them, use
+`trunk build --release --cargo-profile mobile-debug`; do not serve the much
+larger unoptimized dev build to mobile devices.

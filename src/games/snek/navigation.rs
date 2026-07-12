@@ -4,6 +4,8 @@ use std::collections::{HashMap, VecDeque};
 
 use super::state::{Cell, Direction, SplitterStation};
 
+const L_SHAPE_THRESHOLD: isize = 3;
+
 pub(super) fn idle_direction(
     id: usize,
     from: Cell,
@@ -323,7 +325,9 @@ fn greedy_direction_toward(
 ) -> Direction {
     let dx = wrapped_delta(from.col, to.col, cols);
     let dy = wrapped_delta(from.row, to.row, rows);
-    let preferred = if dx.abs() > 5 && dy.abs() > 5 {
+    let preferred = if should_finish_l_leg(dx, dy, current) {
+        current
+    } else if dx.abs() > L_SHAPE_THRESHOLD && dy.abs() > L_SHAPE_THRESHOLD {
         match current {
             Direction::Left | Direction::Right if dx != 0 => horizontal_direction(dx),
             Direction::Up | Direction::Down if dy != 0 => vertical_direction(dy),
@@ -368,7 +372,9 @@ fn ordered_directions(
 ) -> [Direction; 4] {
     let dx = wrapped_delta(from.col, to.col, cols);
     let dy = wrapped_delta(from.row, to.row, rows);
-    let first = if dx.abs() > 5 && dy.abs() > 5 {
+    let first = if should_finish_l_leg(dx, dy, current) {
+        current
+    } else if dx.abs() > L_SHAPE_THRESHOLD && dy.abs() > L_SHAPE_THRESHOLD {
         match current {
             Direction::Left | Direction::Right if dx != 0 => horizontal_direction(dx),
             Direction::Up | Direction::Down if dy != 0 => vertical_direction(dy),
@@ -395,6 +401,17 @@ fn ordered_directions(
         horizontal_direction(dx)
     };
     unique_directions([first, second, first.clockwise(), first.counter_clockwise()])
+}
+
+fn should_finish_l_leg(dx: isize, dy: isize, current: Direction) -> bool {
+    match current {
+        Direction::Left | Direction::Right => {
+            dx != 0 && current == horizontal_direction(dx) && dy.abs() <= L_SHAPE_THRESHOLD
+        }
+        Direction::Up | Direction::Down => {
+            dy != 0 && current == vertical_direction(dy) && dx.abs() <= L_SHAPE_THRESHOLD
+        }
+    }
 }
 
 pub(super) fn unique_directions(mut directions: [Direction; 4]) -> [Direction; 4] {
@@ -590,12 +607,12 @@ mod tests {
     }
 
     #[test]
-    fn long_diagonal_autopilot_keeps_current_axis_for_box_paths() {
+    fn long_diagonal_autopilot_uses_three_cell_l_threshold() {
         let mut navigation = NavigationCache::new(30, 30, Vec::new());
         assert_eq!(
             navigation.direction_toward(
                 Cell::new(2, 2),
-                Cell::new(8, 8),
+                Cell::new(6, 6),
                 Direction::Right,
                 PathMode::AvoidStation,
             ),
@@ -604,7 +621,7 @@ mod tests {
         assert_eq!(
             navigation.direction_toward(
                 Cell::new(2, 2),
-                Cell::new(8, 8),
+                Cell::new(6, 6),
                 Direction::Down,
                 PathMode::AvoidStation,
             ),
@@ -613,7 +630,7 @@ mod tests {
         assert_eq!(
             navigation.direction_toward(
                 Cell::new(2, 2),
-                Cell::new(7, 8),
+                Cell::new(5, 6),
                 Direction::Right,
                 PathMode::AvoidStation,
             ),
@@ -622,8 +639,45 @@ mod tests {
     }
 
     #[test]
+    fn autopilot_finishes_committed_l_leg_before_changing_axis() {
+        let mut navigation = NavigationCache::new(30, 30, Vec::new());
+        let target = Cell::new(8, 8);
+
+        assert_eq!(
+            navigation.direction_toward(
+                Cell::new(5, 2),
+                target,
+                Direction::Right,
+                PathMode::AvoidStation,
+            ),
+            Direction::Down
+        );
+        for row in 3..8 {
+            assert_eq!(
+                navigation.direction_toward(
+                    Cell::new(5, row),
+                    target,
+                    Direction::Down,
+                    PathMode::AvoidStation,
+                ),
+                Direction::Down,
+                "peeled off the committed vertical leg at row {row}"
+            );
+        }
+        assert_eq!(
+            navigation.direction_toward(
+                Cell::new(5, 8),
+                target,
+                Direction::Down,
+                PathMode::AvoidStation,
+            ),
+            Direction::Right
+        );
+    }
+
+    #[test]
     fn autopilot_routes_around_splitter_station() {
-        let station = SplitterStation::new(Cell::new(5, 5), 0, StationDesign::Gate, 20, 20);
+        let station = SplitterStation::new(Cell::new(5, 5), 0, StationDesign::Splitter, 20, 20);
         let mut navigation = NavigationCache::new(20, 20, vec![station]);
 
         assert_ne!(
@@ -678,9 +732,9 @@ mod tests {
 
     #[test]
     fn irregular_splitter_corners_are_not_invisible_walls() {
-        let station = SplitterStation::new(Cell::new(5, 5), 0, StationDesign::Gate, 20, 20);
-        let open_corner = Cell::new(5, 5);
-        let frame = Cell::new(7, 5);
+        let station = SplitterStation::new(Cell::new(5, 5), 0, StationDesign::Splitter, 20, 20);
+        let open_corner = Cell::new(6, 5);
+        let frame = Cell::new(5, 5);
 
         assert!(station.contains(open_corner));
         assert!(!station.occupies(open_corner));

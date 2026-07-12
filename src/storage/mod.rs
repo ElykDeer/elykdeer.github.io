@@ -15,7 +15,7 @@ pub const BACKUP_STORAGE_KEYS: &[&str] = &[
     "elyk.bubbles.save.hard",
     "elyk.bubbles.progress.v1",
     #[cfg(debug_assertions)]
-    "elyk.snek.save.v3",
+    "elyk.snek.save.v14",
     "elyk.textropolis.progress.v1",
     "elyk.wordhunt.progress.v1",
 ];
@@ -291,8 +291,8 @@ mod tests {
                 r#"{"guessed":{}}"#.to_string(),
             ),
             (
-                "elyk.snek.save.v3".to_string(),
-                r#"{"version":2}"#.to_string(),
+                "elyk.snek.save.v14".to_string(),
+                r#"{"version":13}"#.to_string(),
             ),
             ("unknown".to_string(), "ignored".to_string()),
         ]);
@@ -307,7 +307,7 @@ mod tests {
             .local_storage
             .contains_key("elyk.textropolis.progress.v1"));
         #[cfg(debug_assertions)]
-        assert!(imported.local_storage.contains_key("elyk.snek.save.v3"));
+        assert!(imported.local_storage.contains_key("elyk.snek.save.v14"));
     }
 
     #[test]

@@ -25,14 +25,14 @@ use web_sys::{
 
 #[cfg(target_arch = "wasm32")]
 use super::state::{
-    station_cell, Cell, Direction, Lcg, SavedSnekGame, Snek, SnekGame as SnekState,
-    SplitterActivity, SplitterActivityPhase, SplitterStation, StationDesign, APPLE_COST,
-    AUTO_SNEK_COST, DEFAULT_COLS, DEFAULT_ROWS, MIN_SNEK_LEN, SPLITTER_STATION_COLS,
-    SPLITTER_STATION_ROWS, SPLITTER_STATION_UNLOCK_COST,
+    station_cell, BootstrapActivityPhase, Cell, Direction, Lcg, SavedSnekGame, Snek,
+    SnekGame as SnekState, SplitterActivity, SplitterActivityPhase, SplitterStation, StationDesign,
+    APPLE_COST, AUTO_SNEK_COST, DEFAULT_COLS, DEFAULT_ROWS, JUICER_PLACEMENT_UNLOCK_COST,
+    MIN_SNEK_LEN, SPLITTER_STATION_UNLOCK_COST,
 };
 
 #[cfg(target_arch = "wasm32")]
-const STORAGE_KEY: &str = "elyk.snek.save.v3";
+const STORAGE_KEY: &str = "elyk.snek.save.v14";
 #[cfg(target_arch = "wasm32")]
 const CLEAR_EVENT: &str = "elyk:snek-clear";
 #[cfg(target_arch = "wasm32")]
@@ -42,21 +42,23 @@ const STEP_MS: f64 = 50.0;
 #[cfg(target_arch = "wasm32")]
 const SAVE_MS: f64 = 5_000.0;
 #[cfg(target_arch = "wasm32")]
+const RATE_SAMPLE_MS: f64 = 3_000.0;
+#[cfg(target_arch = "wasm32")]
 const SWIPE_THRESHOLD: f64 = 18.0;
 #[cfg(target_arch = "wasm32")]
 const HUD_MARGIN: f64 = 14.0;
 #[cfg(target_arch = "wasm32")]
 const HUD_BUTTON_HEIGHT: f64 = 34.0;
 #[cfg(target_arch = "wasm32")]
-const STATION_OPTION_WIDTH: f64 = 74.0;
-#[cfg(target_arch = "wasm32")]
 const STATION_OPTION_HEIGHT: f64 = 54.0;
-#[cfg(target_arch = "wasm32")]
-const STATION_OPTION_GAP: f64 = 8.0;
 #[cfg(target_arch = "wasm32")]
 const ICON_BUTTON_SIZE: f64 = 34.0;
 #[cfg(target_arch = "wasm32")]
-const SHOP_BUTTON_WIDTH: f64 = 92.0;
+const TOOLBELT_SLOTS: usize = 9;
+#[cfg(target_arch = "wasm32")]
+const TOOLBELT_SLOT_SIZE: f64 = 44.0;
+#[cfg(target_arch = "wasm32")]
+const TOOLBELT_GAP: f64 = 4.0;
 #[cfg(target_arch = "wasm32")]
 const SITE_BACKGROUND: &str = "#1e1e1e";
 #[cfg(target_arch = "wasm32")]
@@ -362,8 +364,14 @@ struct SnekRunner {
     last_layout: Option<SnekLayout>,
     panning_pointer: Option<i32>,
     pan_start: Option<(f64, f64, f64, f64)>,
-    shop_open: bool,
     population_open: bool,
+    population_scroll: f64,
+    population_drag: Option<(i32, f64, f64)>,
+    unlock_queue_open: bool,
+    toolbar_collapsed: bool,
+    last_rate_sample: f64,
+    rate_totals: (usize, usize, usize),
+    rates: (f64, f64, f64),
     cheat: bool,
     active_pointers: Vec<ActivePointer>,
     pinch: Option<PinchState>,
@@ -395,8 +403,11 @@ struct HudSnapshot<'a> {
     draft: Option<&'a StationDraft>,
     selected_station: Option<usize>,
     camera: Camera,
-    shop_open: bool,
     population_open: bool,
+    population_scroll: f64,
+    unlock_queue_open: bool,
+    toolbar_collapsed: bool,
+    rates: (f64, f64, f64),
     cheat: bool,
 }
 
@@ -413,6 +424,8 @@ struct HudButton {
 #[cfg(target_arch = "wasm32")]
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum HudButtonKind {
+    UnlockJuicer,
+    UnlockJuicerPlacement,
     AutoSnek,
     StationOption(StationDesign),
     PlaceStation,
@@ -420,12 +433,18 @@ enum HudButtonKind {
     CancelStation,
     MoveStation,
     DeleteStation,
-    BuySnek,
     BuyApple,
     BuySplitterUnlock,
-    ShopToggle,
+    UnlockQueueToggle,
+    ToolbarToggle,
     PopulationToggle,
-    DebugAdd10,
+    PopulationClose,
+    MaxLengthDown,
+    MaxLengthUp,
+    TargetDown(usize),
+    TargetUp(usize),
+    DebugAdd10Apls,
+    DebugAdd10Juice,
     PanelBlocker,
 }
 
@@ -453,6 +472,7 @@ impl SnekRunner {
         let game = load_save()
             .and_then(|save| SnekState::from_save(save, DEFAULT_COLS, DEFAULT_ROWS))
             .unwrap_or_else(|| SnekState::new(DEFAULT_COLS, DEFAULT_ROWS, seed));
+        let rate_totals = game.production_totals();
 
         Self {
             game,
@@ -476,8 +496,14 @@ impl SnekRunner {
             last_layout: None,
             panning_pointer: None,
             pan_start: None,
-            shop_open: false,
             population_open: false,
+            population_scroll: 0.0,
+            population_drag: None,
+            unlock_queue_open: true,
+            toolbar_collapsed: true,
+            last_rate_sample: 0.0,
+            rate_totals,
+            rates: (0.0, 0.0, 0.0),
             cheat,
             active_pointers: Vec::new(),
             pinch: None,
@@ -485,6 +511,7 @@ impl SnekRunner {
     }
 
     fn update(&mut self, timestamp: f64) {
+        let toolbelt_was_available = self.game.toolbelt_available();
         if self.last_step == 0.0 {
             self.last_step = timestamp;
         }
@@ -505,9 +532,39 @@ impl SnekRunner {
             self.last_step = timestamp;
         }
 
+        if !toolbelt_was_available && self.game.toolbelt_available() {
+            self.selected_station = None;
+            self.station_draft = None;
+            self.population_open = false;
+            self.population_drag = None;
+            self.unlock_queue_open = false;
+            self.toolbar_collapsed = false;
+            self.pointer_start = None;
+            self.drag_pointer = None;
+            self.draft_anchor = None;
+            self.panning_pointer = None;
+            self.pan_start = None;
+            self.active_pointers.clear();
+            self.pinch = None;
+        }
+
         if self.dirty && timestamp - self.last_save >= SAVE_MS {
             self.save_now();
             self.last_save = timestamp;
+        }
+        if self.last_rate_sample == 0.0 {
+            self.last_rate_sample = timestamp;
+            self.rate_totals = self.game.production_totals();
+        } else if timestamp - self.last_rate_sample >= RATE_SAMPLE_MS {
+            let seconds = (timestamp - self.last_rate_sample) / 1_000.0;
+            let totals = self.game.production_totals();
+            self.rates = (
+                totals.0.saturating_sub(self.rate_totals.0) as f64 / seconds,
+                totals.1.saturating_sub(self.rate_totals.1) as f64 / seconds,
+                totals.2.saturating_sub(self.rate_totals.2) as f64 / seconds,
+            );
+            self.rate_totals = totals;
+            self.last_rate_sample = timestamp;
         }
     }
 
@@ -552,7 +609,18 @@ impl SnekRunner {
             if moving_station == Some(index) {
                 continue;
             }
-            draw_station(&context, station, CELL_SIZE, 1.0);
+            let construction = self.game.construction_progress(station);
+            draw_station(
+                &context,
+                station,
+                CELL_SIZE,
+                construction.map_or(1.0, |progress| 0.3 + progress * 0.55),
+                self.game.wiggle_t(),
+                self.game.juicer_activity(station),
+            );
+            if let Some(progress) = construction {
+                draw_construction_packets(&context, station, progress);
+            }
             if self.selected_station == Some(index) {
                 draw_station_selection(&context, station);
             }
@@ -567,6 +635,25 @@ impl SnekRunner {
                 CELL_SIZE,
                 if draft.dragging { 0.76 } else { 0.9 },
             );
+            let moving_index = match draft.source {
+                StationDraftSource::Move { index } => Some(index),
+                StationDraftSource::New => None,
+            };
+            if !self.game.station_draft_valid(
+                draft.origin,
+                draft.rotation,
+                draft.design,
+                moving_index,
+            ) {
+                draw_station_invalid_overlay(
+                    &context,
+                    draft.origin.col as f64 * CELL_SIZE,
+                    draft.origin.row as f64 * CELL_SIZE,
+                    draft.design,
+                    draft.rotation,
+                    CELL_SIZE,
+                );
+            }
         }
         for snek in self.game.sneks() {
             draw_snek(
@@ -576,6 +663,24 @@ impl SnekRunner {
                 self.game.auto_snek_unlocked() && self.game.manual_snek() == Some(snek.id()),
             );
         }
+        let bootstrap_activity = self.game.bootstrap_activity();
+        if let Some(activity) = bootstrap_activity {
+            match activity.phase {
+                BootstrapActivityPhase::Cutting => {
+                    draw_bootstrap_blade(&context, activity.center, activity.progress);
+                }
+                BootstrapActivityPhase::Walking => draw_bootstrap_cost_walk(
+                    &context,
+                    self.game.bootstrap_cost_segments(),
+                    activity.direction,
+                    activity.progress,
+                    activity.center,
+                    self.game.cols(),
+                ),
+                BootstrapActivityPhase::Routing | BootstrapActivityPhase::Flash => {}
+            }
+        }
+        draw_juicer_feeds(&context, self.game.juicer_feeds(), self.game.wiggle_t());
         let splitter_activities = self.game.splitter_activities();
         for activity in splitter_activities.iter().copied() {
             if activity.phase() == SplitterActivityPhase::Cutting {
@@ -583,7 +688,7 @@ impl SnekRunner {
             }
         }
         for (index, station) in self.game.splitter_stations().iter().copied().enumerate() {
-            if moving_station == Some(index) {
+            if moving_station == Some(index) || self.game.construction_progress(station).is_some() {
                 continue;
             }
             let activity = splitter_activities
@@ -591,7 +696,7 @@ impl SnekRunner {
                 .rev()
                 .copied()
                 .find(|activity| activity.station() == station);
-            draw_station_access(&context, station, activity);
+            draw_station_access(&context, station, activity, self.game.juicer_busy(station));
         }
         reset_screen_transform(&context, layout);
         self.buttons = draw_hud(
@@ -602,13 +707,29 @@ impl SnekRunner {
                 draft: self.station_draft.as_ref(),
                 selected_station: self.selected_station,
                 camera: self.camera,
-                shop_open: self.shop_open,
                 population_open: self.population_open,
+                population_scroll: self.population_scroll,
+                unlock_queue_open: self.unlock_queue_open,
+                toolbar_collapsed: self.toolbar_collapsed,
+                rates: self.rates,
                 cheat: self.cheat,
             },
         );
         if self.paused {
             draw_paused(&context, layout);
+        }
+        if let Some(activity) =
+            bootstrap_activity.filter(|activity| activity.phase == BootstrapActivityPhase::Flash)
+        {
+            draw_bootstrap_flash(
+                &context,
+                layout,
+                self.camera,
+                self.game.cols(),
+                self.game.rows(),
+                activity.flash_origin,
+                activity.progress,
+            );
         }
     }
 
@@ -643,6 +764,9 @@ impl SnekRunner {
                 HudButtonKind::StationOption(design) => {
                     self.start_station_draft(canvas_x, canvas_y, design, pointer_id);
                 }
+                HudButtonKind::PanelBlocker if self.population_open => {
+                    self.population_drag = Some((pointer_id, canvas_y, self.population_scroll));
+                }
                 _ => self.activate_button(kind),
             }
             return;
@@ -674,6 +798,17 @@ impl SnekRunner {
     }
 
     fn pointer_move(&mut self, canvas: &HtmlCanvasElement, x: f64, y: f64, pointer_id: i32) {
+        if let Some((drag_id, start_y, start_scroll)) = self.population_drag {
+            if drag_id == pointer_id {
+                if let (Some((_, canvas_y)), Some(layout)) =
+                    (canvas_point(canvas, x, y), self.last_layout)
+                {
+                    self.population_scroll = (start_scroll + start_y - canvas_y)
+                        .clamp(0.0, population_max_scroll(layout, &self.game));
+                }
+                return;
+            }
+        }
         if let Some((canvas_x, canvas_y)) = canvas_point(canvas, x, y) {
             self.update_active_pointer(pointer_id, canvas_x, canvas_y);
             if self.pinch.is_some() {
@@ -704,6 +839,13 @@ impl SnekRunner {
     }
 
     fn pointer_up(&mut self, canvas: &HtmlCanvasElement, x: f64, y: f64, pointer_id: i32) {
+        if self
+            .population_drag
+            .is_some_and(|(drag_id, _, _)| drag_id == pointer_id)
+        {
+            self.population_drag = None;
+            return;
+        }
         if self.drag_pointer == Some(pointer_id) {
             if let Some((canvas_x, canvas_y)) = canvas_point(canvas, x, y) {
                 let (world_x, world_y) = self.screen_to_world(canvas_x, canvas_y);
@@ -763,6 +905,12 @@ impl SnekRunner {
     }
 
     fn pointer_cancel(&mut self, pointer_id: i32) {
+        if self
+            .population_drag
+            .is_some_and(|(drag_id, _, _)| drag_id == pointer_id)
+        {
+            self.population_drag = None;
+        }
         if self.drag_pointer == Some(pointer_id) {
             if let Some(draft) = &mut self.station_draft {
                 draft.dragging = false;
@@ -810,8 +958,14 @@ impl SnekRunner {
         };
         self.panning_pointer = None;
         self.pan_start = None;
-        self.shop_open = false;
         self.population_open = false;
+        self.population_scroll = 0.0;
+        self.population_drag = None;
+        self.unlock_queue_open = true;
+        self.toolbar_collapsed = true;
+        self.last_rate_sample = 0.0;
+        self.rate_totals = self.game.production_totals();
+        self.rates = (0.0, 0.0, 0.0);
         self.active_pointers.clear();
         self.pinch = None;
     }
@@ -855,6 +1009,12 @@ impl SnekRunner {
             (world_x / CELL_SIZE).floor().max(0.0) as usize,
             (world_y / CELL_SIZE).floor().max(0.0) as usize,
         );
+        if self.game.tap_cell(cell) {
+            self.selected_station = None;
+            self.population_open = false;
+            self.dirty = true;
+            return;
+        }
         if let Some(station_index) = self.game.station_index_at(cell) {
             self.selected_station = Some(station_index);
             self.population_open = false;
@@ -863,7 +1023,6 @@ impl SnekRunner {
         }
 
         self.selected_station = None;
-        self.game.tap_cell(cell);
         self.dirty = true;
     }
 
@@ -877,6 +1036,16 @@ impl SnekRunner {
 
     fn activate_button(&mut self, kind: HudButtonKind) {
         match kind {
+            HudButtonKind::UnlockJuicer => {
+                if self.game.unlock_juicer() {
+                    self.dirty = true;
+                }
+            }
+            HudButtonKind::UnlockJuicerPlacement => {
+                if self.game.buy_juicer_placement_unlock() {
+                    self.dirty = true;
+                }
+            }
             HudButtonKind::AutoSnek => {
                 if self.game.buy_auto_snek() {
                     self.dirty = true;
@@ -910,12 +1079,7 @@ impl SnekRunner {
                     };
                     if placed {
                         self.station_draft = None;
-                        self.selected_station = match draft.source {
-                            StationDraftSource::New => {
-                                self.game.splitter_stations().len().checked_sub(1)
-                            }
-                            StationDraftSource::Move { index } => Some(index),
-                        };
+                        self.selected_station = None;
                         self.drag_pointer = None;
                         self.draft_anchor = None;
                         self.dirty = true;
@@ -945,7 +1109,6 @@ impl SnekRunner {
                         source: StationDraftSource::Move { index },
                     });
                     self.selected_station = None;
-                    self.shop_open = false;
                 }
             }
             HudButtonKind::DeleteStation => {
@@ -961,18 +1124,49 @@ impl SnekRunner {
             }
             HudButtonKind::BuySplitterUnlock => {
                 if self.game.buy_splitter_unlock() {
-                    self.shop_open = true;
-                    self.population_open = false;
                     self.dirty = true;
                 }
             }
-            HudButtonKind::PopulationToggle => {
-                self.population_open = !self.population_open;
-                if self.population_open {
-                    self.shop_open = false;
+            HudButtonKind::UnlockQueueToggle => {
+                self.unlock_queue_open = !self.unlock_queue_open;
+                if self.unlock_queue_open {
+                    self.population_open = false;
+                    self.toolbar_collapsed = true;
                 }
             }
-            HudButtonKind::DebugAdd10 => {
+            HudButtonKind::ToolbarToggle => {
+                self.toolbar_collapsed = !self.toolbar_collapsed;
+            }
+            HudButtonKind::PopulationToggle => {
+                if !self.game.population_unlocked() {
+                    return;
+                }
+                self.population_open = !self.population_open;
+                if self.population_open {
+                    self.unlock_queue_open = false;
+                }
+            }
+            HudButtonKind::PopulationClose => {
+                self.population_open = false;
+                self.population_drag = None;
+            }
+            HudButtonKind::MaxLengthDown => {
+                self.game.adjust_max_snek_len(-1);
+                self.dirty = true;
+            }
+            HudButtonKind::MaxLengthUp => {
+                self.game.adjust_max_snek_len(1);
+                self.dirty = true;
+            }
+            HudButtonKind::TargetDown(length) => {
+                self.game.adjust_length_target(length, -1);
+                self.dirty = true;
+            }
+            HudButtonKind::TargetUp(length) => {
+                self.game.adjust_length_target(length, 1);
+                self.dirty = true;
+            }
+            HudButtonKind::DebugAdd10Apls => {
                 #[cfg(debug_assertions)]
                 if self.cheat {
                     self.game.debug_add_apls(10);
@@ -983,20 +1177,20 @@ impl SnekRunner {
                     let _ = self.cheat;
                 }
             }
-            HudButtonKind::BuySnek => {
-                if self.game.buy_snek() {
+            HudButtonKind::DebugAdd10Juice => {
+                #[cfg(debug_assertions)]
+                if self.cheat {
+                    self.game.debug_add_juice(10);
                     self.dirty = true;
+                }
+                #[cfg(not(debug_assertions))]
+                {
+                    let _ = self.cheat;
                 }
             }
             HudButtonKind::BuyApple => {
                 if self.game.buy_apple(&mut self.rng) {
                     self.dirty = true;
-                }
-            }
-            HudButtonKind::ShopToggle => {
-                self.shop_open = !self.shop_open;
-                if self.shop_open {
-                    self.population_open = false;
                 }
             }
             HudButtonKind::PanelBlocker => {}
@@ -1012,7 +1206,7 @@ impl SnekRunner {
     ) {
         let (world_x, world_y) = self.screen_to_world(canvas_x, canvas_y);
         self.station_draft = Some(StationDraft {
-            origin: station_origin_from_point(world_x, world_y, 0),
+            origin: station_origin_from_point(world_x, world_y, design, 0),
             rotation: 0,
             design,
             dragging: true,
@@ -1026,7 +1220,8 @@ impl SnekRunner {
 
     fn update_station_draft(&mut self, canvas_x: f64, canvas_y: f64) {
         if let Some(draft) = &mut self.station_draft {
-            draft.origin = station_origin_from_point(canvas_x, canvas_y, draft.rotation);
+            draft.origin =
+                station_origin_from_point(canvas_x, canvas_y, draft.design, draft.rotation);
         }
     }
 
@@ -1174,6 +1369,19 @@ impl SnekRunner {
         let Some((x, y)) = canvas_point(canvas, client_x, client_y) else {
             return;
         };
+        if self.population_open {
+            let (panel_x, panel_y, panel_width, panel_height) =
+                population_panel_rect(layout, &self.game);
+            if x >= panel_x
+                && x <= panel_x + panel_width
+                && y >= panel_y
+                && y <= panel_y + panel_height
+            {
+                self.population_scroll = (self.population_scroll + delta_y)
+                    .clamp(0.0, population_max_scroll(layout, &self.game));
+                return;
+            }
+        }
         let (world_x, world_y) = self.screen_to_world(x, y);
         let factor = (-delta_y / 420.0).exp().clamp(0.76, 1.32);
         self.camera.zoom = self.normalize_zoom(self.camera.zoom * factor, layout);
@@ -1365,22 +1573,28 @@ fn draw_apple(context: &CanvasRenderingContext2d, apple: Cell) {
 #[cfg(target_arch = "wasm32")]
 fn draw_snek(context: &CanvasRenderingContext2d, snek: &Snek, wiggle_t: f64, selected: bool) {
     let positions = snek.positions();
+    draw_snek_segments(context, positions, wiggle_t, positions.len());
     let offsets = wiggle_offsets(positions, wiggle_t);
-    let green_step = 255.0 / positions.len().max(1) as f64;
-    let mut green: f64 = 32.0;
-
-    for (index, cell) in positions.iter().copied().enumerate() {
-        context.set_fill_style_str(&format!("rgb(0, {}, 20)", green.floor() as u8));
-        if green + green_step <= 255.0 {
-            green += green_step;
-        }
+    for (index, cell) in positions
+        .iter()
+        .enumerate()
+        .rev()
+        .take(snek.carried_juice_segments())
+    {
         let (dx, dy) = offsets.get(index).copied().unwrap_or((0.0, 0.0));
-        context.fill_rect(
-            cell.col as f64 * CELL_SIZE + dx,
-            cell.row as f64 * CELL_SIZE + dy,
-            CELL_SIZE,
-            CELL_SIZE,
-        );
+        let x = cell.col as f64 * CELL_SIZE + dx + CELL_SIZE * 0.2;
+        let y = cell.row as f64 * CELL_SIZE + dy + CELL_SIZE * 0.2;
+        let size = CELL_SIZE * 0.6;
+        context.set_fill_style_str("#f1c84b");
+        context.fill_rect(x, y, size, size);
+        context.set_stroke_style_str("#ffffff");
+        context.set_line_width(1.0);
+        context.begin_path();
+        context.move_to(x + size / 2.0, y);
+        context.line_to(x + size / 2.0, y + size);
+        context.move_to(x, y + size / 2.0);
+        context.line_to(x + size, y + size / 2.0);
+        context.stroke();
     }
 
     if selected {
@@ -1397,13 +1611,58 @@ fn draw_snek(context: &CanvasRenderingContext2d, snek: &Snek, wiggle_t: f64, sel
 }
 
 #[cfg(target_arch = "wasm32")]
+fn draw_snek_segments(
+    context: &CanvasRenderingContext2d,
+    positions: &VecDeque<Cell>,
+    wiggle_t: f64,
+    gradient_len: usize,
+) {
+    let offsets = wiggle_offsets(positions, wiggle_t);
+    let green_step = 255.0 / gradient_len.max(1) as f64;
+    let mut green: f64 = 32.0;
+
+    for (index, cell) in positions.iter().copied().enumerate() {
+        context.set_fill_style_str(&format!("rgb(0, {}, 20)", green.floor() as u8));
+        if green + green_step <= 255.0 {
+            green += green_step;
+        }
+        let (dx, dy) = offsets.get(index).copied().unwrap_or((0.0, 0.0));
+        context.fill_rect(
+            cell.col as f64 * CELL_SIZE + dx,
+            cell.row as f64 * CELL_SIZE + dy,
+            CELL_SIZE,
+            CELL_SIZE,
+        );
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn draw_juicer_feeds<'a>(
+    context: &CanvasRenderingContext2d,
+    feeds: impl Iterator<Item = (&'a VecDeque<Cell>, usize)>,
+    wiggle_t: f64,
+) {
+    for (segments, gradient_len) in feeds {
+        draw_snek_segments(context, segments, wiggle_t, gradient_len);
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
 fn draw_split_effect(context: &CanvasRenderingContext2d, activity: SplitterActivity) {
-    let progress = activity.progress();
-    let station = activity.station();
+    draw_machine_cut_effect(context, activity.station(), activity.progress());
+}
+
+#[cfg(target_arch = "wasm32")]
+fn draw_machine_cut_effect(
+    context: &CanvasRenderingContext2d,
+    station: SplitterStation,
+    progress: f64,
+) {
     let cell = station.cut_target();
     let flow = station.flow_direction();
-    let side = station.old_exit_direction();
-    let (side_x, side_y) = direction_vector(side);
+    let service_side = flow.counter_clockwise();
+    let (flow_x, flow_y) = direction_vector(flow);
+    let (side_x, side_y) = direction_vector(service_side);
     let x = cell.col as f64 * CELL_SIZE;
     let y = cell.row as f64 * CELL_SIZE;
     let center_x = x + CELL_SIZE / 2.0;
@@ -1411,18 +1670,141 @@ fn draw_split_effect(context: &CanvasRenderingContext2d, activity: SplitterActiv
     let previous_alpha = context.global_alpha();
     context.set_global_alpha(0.98);
 
-    draw_effect_anvil(context, center_x, center_y, flow, side_x, side_y);
-    let slam_t = (progress / 0.35).clamp(0.0, 1.0);
-    let retract_t = ((progress - 0.7) / 0.3).clamp(0.0, 1.0);
-    let blade_offset = CELL_SIZE * (1.15 - slam_t * 0.81 + retract_t * 0.81);
-    draw_effect_blade(
+    draw_effect_anvil(
         context,
-        center_x - side_x * blade_offset,
-        center_y - side_y * blade_offset,
+        center_x + flow_x * CELL_SIZE * 0.08 - side_x * CELL_SIZE * 0.22,
+        center_y + flow_y * CELL_SIZE * 0.08 - side_y * CELL_SIZE * 0.22,
         flow,
     );
 
+    let approach = smooth_step((progress / 0.28).clamp(0.0, 1.0));
+    let retract = smooth_step(((progress - 0.76) / 0.24).clamp(0.0, 1.0));
+    let travel = approach - retract;
+    let carriage_offset = CELL_SIZE * (1.2 - travel * 1.15);
+    let carriage_x = center_x - flow_x * carriage_offset + side_x * CELL_SIZE * 0.72;
+    let carriage_y = center_y - flow_y * carriage_offset + side_y * CELL_SIZE * 0.72;
+    let tooth_drop = smooth_step(((progress - 0.2) / 0.22).clamp(0.0, 1.0))
+        - smooth_step(((progress - 0.7) / 0.2).clamp(0.0, 1.0));
+    draw_effect_blade(
+        context,
+        carriage_x,
+        carriage_y,
+        flow,
+        service_side,
+        tooth_drop,
+    );
+
+    if (0.4..=0.72).contains(&progress) {
+        draw_cut_flash(context, center_x, center_y, flow, progress);
+    }
+
     context.set_global_alpha(previous_alpha);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn draw_bootstrap_blade(context: &CanvasRenderingContext2d, center: Cell, progress: f64) {
+    let center_x = (center.col as f64 + 0.5) * CELL_SIZE;
+    let center_y = (center.row as f64 + 0.5) * CELL_SIZE;
+    let drop = smooth_step((progress / 0.58).clamp(0.0, 1.0));
+    let retract = smooth_step(((progress - 0.78) / 0.22).clamp(0.0, 1.0));
+    let y = center_y - CELL_SIZE * (5.0 * (1.0 - drop) + retract * 2.0);
+    let width = CELL_SIZE * 3.4;
+    let height = CELL_SIZE * 0.72;
+    context.set_fill_style_str("#bcc5ca");
+    context.fill_rect(center_x - width / 2.0, y - height, width, height);
+    context.set_stroke_style_str("#222222");
+    context.set_line_width(2.0);
+    context.stroke_rect(center_x - width / 2.0, y - height, width, height);
+    context.set_fill_style_str("#737d84");
+    for tooth in 0..7 {
+        context.fill_rect(
+            center_x - width / 2.0 + tooth as f64 * width / 7.0,
+            y,
+            width / 14.0,
+            CELL_SIZE * 0.32,
+        );
+    }
+    if (0.48..=0.72).contains(&progress) {
+        draw_cut_flash(context, center_x, center_y, Direction::Right, progress);
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn draw_bootstrap_cost_walk(
+    context: &CanvasRenderingContext2d,
+    segments: &VecDeque<Cell>,
+    direction: Direction,
+    progress: f64,
+    center: Cell,
+    cols: usize,
+) {
+    let sign = if direction == Direction::Left {
+        -1.0
+    } else {
+        1.0
+    };
+    let edge_distance = if direction == Direction::Left {
+        center.col as f64
+    } else {
+        cols.saturating_sub(center.col) as f64
+    };
+    let head_x = (center.col as f64
+        + 0.5
+        + sign * smooth_step(progress) * (edge_distance + segments.len() as f64 + 2.0))
+        * CELL_SIZE;
+    let base_y = center.row as f64 * CELL_SIZE;
+    let green_step = 223.0 / segments.len().max(1) as f64;
+    for index in 0..segments.len() {
+        let lag = (segments.len() - 1 - index) as f64 * CELL_SIZE;
+        let wave =
+            (progress * std::f64::consts::TAU * 4.0 - index as f64 * 0.78).sin() * CELL_SIZE * 0.16;
+        context.set_fill_style_str(&format!(
+            "rgb(0, {}, 20)",
+            (32.0 + green_step * index as f64).min(255.0) as u8
+        ));
+        context.fill_rect(
+            head_x - sign * lag - CELL_SIZE / 2.0,
+            base_y + wave,
+            CELL_SIZE,
+            CELL_SIZE,
+        );
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn draw_bootstrap_flash(
+    context: &CanvasRenderingContext2d,
+    layout: SnekLayout,
+    camera: Camera,
+    cols: usize,
+    rows: usize,
+    origin: Cell,
+    progress: f64,
+) {
+    let (offset_x, offset_y) = board_screen_offset(layout, camera, cols, rows);
+    let center_x = offset_x - camera.pan_x + (origin.col as f64 + 0.5) * CELL_SIZE * camera.zoom;
+    let center_y = offset_y - camera.pan_y + (origin.row as f64 + 0.5) * CELL_SIZE * camera.zoom;
+    let radius = smooth_step(progress) * layout.width.hypot(layout.height) * 1.15;
+    let alpha = if progress < 0.6 {
+        (progress / 0.6).clamp(0.0, 1.0)
+    } else {
+        ((1.0 - progress) / 0.4).clamp(0.0, 1.0)
+    };
+    context.save();
+    reset_screen_transform(context, layout);
+    context.set_global_alpha(alpha * 0.96);
+    context.set_fill_style_str("#fff8d6");
+    context.begin_path();
+    context
+        .arc(center_x, center_y, radius, 0.0, std::f64::consts::TAU)
+        .ok();
+    context.fill();
+    context.restore();
+}
+
+#[cfg(target_arch = "wasm32")]
+fn smooth_step(value: f64) -> f64 {
+    value * value * (3.0 - 2.0 * value)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1431,15 +1813,13 @@ fn draw_effect_anvil(
     center_x: f64,
     center_y: f64,
     flow: Direction,
-    side_x: f64,
-    side_y: f64,
 ) {
     let (width, height) = match flow {
-        Direction::Left | Direction::Right => (CELL_SIZE * 0.72, CELL_SIZE * 0.58),
-        Direction::Up | Direction::Down => (CELL_SIZE * 0.58, CELL_SIZE * 0.72),
+        Direction::Left | Direction::Right => (CELL_SIZE * 0.34, CELL_SIZE * 0.48),
+        Direction::Up | Direction::Down => (CELL_SIZE * 0.48, CELL_SIZE * 0.34),
     };
-    let block_x = center_x + side_x * CELL_SIZE * 0.34 - width / 2.0;
-    let block_y = center_y + side_y * CELL_SIZE * 0.34 - height / 2.0;
+    let block_x = center_x - width / 2.0;
+    let block_y = center_y - height / 2.0;
     context.set_fill_style_str("#434950");
     context.fill_rect(block_x, block_y, width, height);
     context.set_stroke_style_str("#111111");
@@ -1453,18 +1833,77 @@ fn draw_effect_blade(
     center_x: f64,
     center_y: f64,
     flow: Direction,
+    service_side: Direction,
+    tooth_drop: f64,
 ) {
-    let (width, height) = match flow {
-        Direction::Left | Direction::Right => (CELL_SIZE * 0.24, CELL_SIZE * 0.62),
-        Direction::Up | Direction::Down => (CELL_SIZE * 0.62, CELL_SIZE * 0.24),
+    let (carriage_width, carriage_height) = match flow {
+        Direction::Left | Direction::Right => (CELL_SIZE * 0.84, CELL_SIZE * 0.28),
+        Direction::Up | Direction::Down => (CELL_SIZE * 0.28, CELL_SIZE * 0.84),
     };
-    let x = center_x - width / 2.0;
-    let y = center_y - height / 2.0;
-    context.set_fill_style_str("#d94b43");
-    context.fill_rect(x, y, width, height);
+    let x = center_x - carriage_width / 2.0;
+    let y = center_y - carriage_height / 2.0;
+    context.set_fill_style_str("#b97924");
+    context.fill_rect(x, y, carriage_width, carriage_height);
     context.set_stroke_style_str("#111111");
     context.set_line_width(1.5);
-    context.stroke_rect(x + 0.5, y + 0.5, width - 1.0, height - 1.0);
+    context.stroke_rect(
+        x + 0.5,
+        y + 0.5,
+        carriage_width - 1.0,
+        carriage_height - 1.0,
+    );
+
+    let (side_x, side_y) = direction_vector(service_side.reversed());
+    let tooth_length = CELL_SIZE * (0.22 + tooth_drop * 0.72);
+    let tooth_width = CELL_SIZE * 0.24;
+    let carriage_half = match service_side {
+        Direction::Up | Direction::Down => carriage_height / 2.0,
+        Direction::Left | Direction::Right => carriage_width / 2.0,
+    };
+    let tooth_center_x = center_x + side_x * (carriage_half + tooth_length / 2.0);
+    let tooth_center_y = center_y + side_y * (carriage_half + tooth_length / 2.0);
+    let (tooth_w, tooth_h) = match service_side {
+        Direction::Up | Direction::Down => (tooth_width, tooth_length),
+        Direction::Left | Direction::Right => (tooth_length, tooth_width),
+    };
+    context.set_fill_style_str("#d8dde0");
+    context.fill_rect(
+        tooth_center_x - tooth_w / 2.0,
+        tooth_center_y - tooth_h / 2.0,
+        tooth_w,
+        tooth_h,
+    );
+    context.set_stroke_style_str("#7d2724");
+    context.stroke_rect(
+        tooth_center_x - tooth_w / 2.0 + 0.5,
+        tooth_center_y - tooth_h / 2.0 + 0.5,
+        tooth_w - 1.0,
+        tooth_h - 1.0,
+    );
+}
+
+#[cfg(target_arch = "wasm32")]
+fn draw_cut_flash(
+    context: &CanvasRenderingContext2d,
+    center_x: f64,
+    center_y: f64,
+    flow: Direction,
+    progress: f64,
+) {
+    let pulse = 1.0 - ((progress - 0.56).abs() / 0.16).clamp(0.0, 1.0);
+    let (flow_x, flow_y) = direction_vector(flow);
+    context.set_stroke_style_str("#fff4b0");
+    context.set_line_width(1.0 + pulse * 2.0);
+    context.begin_path();
+    context.move_to(
+        center_x - flow_y * CELL_SIZE * 0.34,
+        center_y + flow_x * CELL_SIZE * 0.34,
+    );
+    context.line_to(
+        center_x + flow_y * CELL_SIZE * 0.34,
+        center_y - flow_x * CELL_SIZE * 0.34,
+    );
+    context.stroke();
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1478,12 +1917,23 @@ fn draw_hud(
         draft,
         selected_station,
         camera,
-        shop_open,
         population_open,
+        population_scroll,
+        unlock_queue_open,
+        toolbar_collapsed,
+        rates,
         cheat,
     } = hud;
     let mut buttons = Vec::new();
-    draw_score(context, layout, game, &mut buttons);
+    draw_score(context, layout, game, rates, &mut buttons);
+    draw_unlock_queue(
+        context,
+        game,
+        unlock_queue_open,
+        cheat,
+        layout.width,
+        &mut buttons,
+    );
 
     if let Some(draft) = draft {
         draw_station_draft_controls(
@@ -1509,12 +1959,10 @@ fn draw_hud(
                 );
             }
         }
-        if shop_open {
-            draw_upgrade_shop(context, layout, game, cheat, &mut buttons);
-        } else if population_open {
-            draw_population_menu(context, layout, game, &mut buttons);
+        if population_open {
+            draw_population_menu(context, layout, game, population_scroll, &mut buttons);
         }
-        draw_bottom_toolbar(context, layout, shop_open, &mut buttons);
+        draw_bottom_toolbar(context, layout, game, toolbar_collapsed, &mut buttons);
     }
 
     buttons
@@ -1525,33 +1973,213 @@ fn draw_score(
     context: &CanvasRenderingContext2d,
     layout: SnekLayout,
     game: &SnekState,
+    rates: (f64, f64, f64),
     buttons: &mut Vec<HudButton>,
 ) {
-    let text = game.apls().to_string();
+    let apls = game.apls().to_string();
     context.set_font("800 24px ui-monospace, SFMono-Regular, Consolas, monospace");
     context.set_line_width(4.0);
     context.set_stroke_style_str("#000000");
     context.set_fill_style_str("#ffffff");
-    let width = measure_text(context, &text, 15.0);
+    let width = measure_text(context, &apls, 15.0);
     let x = (layout.width - width - HUD_MARGIN).max(HUD_MARGIN);
-    let _ = context.stroke_text(&text, x, 32.0);
-    let _ = context.fill_text(&text, x, 32.0);
+    let _ = context.stroke_text(&apls, x, 32.0);
+    let _ = context.fill_text(&apls, x, 32.0);
+
+    if game.juice_discovered() {
+        let juice = game.juice().to_string();
+        let juice_width = measure_text(context, &juice, 15.0);
+        let juice_x = (x - juice_width - 24.0).max(HUD_MARGIN);
+        let _ = context.stroke_text(&juice, juice_x, 32.0);
+        let _ = context.fill_text(&juice, juice_x, 32.0);
+    }
 
     let snek_count = game.sneks().len();
-    if snek_count > 1 {
+    if game.population_unlocked() {
         let count = format!("{snek_count} snek");
         context.set_font("800 16px ui-monospace, SFMono-Regular, Consolas, monospace");
         let count_width = measure_text(context, &count, 10.0);
-        let count_x = (x - count_width - 12.0).max(HUD_MARGIN);
-        let _ = context.stroke_text(&count, count_x, 31.0);
-        let _ = context.fill_text(&count, count_x, 31.0);
+        let count_x = (layout.width - count_width - HUD_MARGIN).max(HUD_MARGIN);
+        let _ = context.stroke_text(&count, count_x, 53.0);
+        let _ = context.fill_text(&count, count_x, 53.0);
         buttons.push(HudButton {
             kind: HudButtonKind::PopulationToggle,
-            x: count_x - 4.0,
-            y: 10.0,
-            width: count_width + 8.0,
-            height: 28.0,
+            x: count_x - 8.0,
+            y: 29.0,
+            width: count_width + 16.0,
+            height: 44.0,
         });
+    }
+    if game.juicer_unlocked() {
+        let mut rate_text = format!("{:.1} apls/sec", rates.0);
+        if game.population_unlocked() {
+            rate_text.push_str(&format!("  {:.1} snek/sec", rates.1));
+        }
+        if game.juice_discovered() {
+            rate_text.push_str(&format!("  {:.1} juice/sec", rates.2 / 10.0));
+        }
+        context.set_font("800 11px ui-monospace, SFMono-Regular, Consolas, monospace");
+        let rate_width = measure_text(context, &rate_text, 7.0);
+        let rate_x = (layout.width - rate_width - HUD_MARGIN).max(HUD_MARGIN);
+        let rate_y = if game.population_unlocked() {
+            72.0
+        } else {
+            52.0
+        };
+        context.set_line_width(3.0);
+        let _ = context.stroke_text(&rate_text, rate_x, rate_y);
+        let _ = context.fill_text(&rate_text, rate_x, rate_y);
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn draw_unlock_queue(
+    context: &CanvasRenderingContext2d,
+    game: &SnekState,
+    open: bool,
+    cheat: bool,
+    viewport_width: f64,
+    buttons: &mut Vec<HudButton>,
+) {
+    if game.bootstrap_activity().is_some() || (!game.unlock_queue_available() && !cheat) {
+        return;
+    }
+
+    let x = HUD_MARGIN;
+    let y = HUD_MARGIN;
+    let width = 290.0_f64.min((viewport_width - HUD_MARGIN * 2.0).max(40.0));
+    let header_height = 30.0;
+    let apple_visible = game.apple_unlock_visible();
+    let auto_visible = !game.auto_snek_unlocked() && game.auto_snek_offer_visible();
+    let splitter_visible = game.splitter_unlock_visible();
+    let juicer_visible = game.juicer_upgrade_visible();
+    context.set_line_width(3.0);
+    context.set_stroke_style_str("#000000");
+    context.set_fill_style_str("#ffffff");
+    context.set_font("800 15px ui-monospace, SFMono-Regular, Consolas, monospace");
+    let symbol = if open { "-" } else { "+" };
+    let _ = context.stroke_text(symbol, x + 12.0, y + 20.0);
+    let _ = context.fill_text(symbol, x + 12.0, y + 20.0);
+    buttons.push(HudButton {
+        kind: HudButtonKind::UnlockQueueToggle,
+        x: x - 7.0,
+        y: y - 7.0,
+        width: 44.0,
+        height: 44.0,
+    });
+
+    if !open {
+        return;
+    }
+
+    let mut row = 0usize;
+    if apple_visible {
+        let apple = draw_button(
+            context,
+            HudButtonKind::BuyApple,
+            x + 6.0,
+            y + header_height + 4.0,
+            width - 12.0,
+            HUD_BUTTON_HEIGHT,
+            &format!("Apple {APPLE_COST} jce"),
+        );
+        if !game.can_buy_apple() {
+            draw_disabled_overlay(context, apple);
+        }
+        buttons.push(apple);
+        row += 1;
+    }
+    if !game.juicer_unlocked() && game.can_unlock_juicer() {
+        let button = draw_button(
+            context,
+            HudButtonKind::UnlockJuicer,
+            x + 6.0,
+            y + header_height + 4.0 + row as f64 * (HUD_BUTTON_HEIGHT + 4.0),
+            width - 12.0,
+            HUD_BUTTON_HEIGHT,
+            "When life gives you -10 apls...",
+        );
+        if !game.can_unlock_juicer() {
+            draw_disabled_overlay(context, button);
+        }
+        buttons.push(button);
+        row += 1;
+    } else {
+        if auto_visible {
+            let button = draw_button(
+                context,
+                HudButtonKind::AutoSnek,
+                x + 6.0,
+                y + header_height + 4.0 + row as f64 * (HUD_BUTTON_HEIGHT + 4.0),
+                width - 12.0,
+                HUD_BUTTON_HEIGHT,
+                &format!("Auto Snek {AUTO_SNEK_COST} jce"),
+            );
+            if !game.can_buy_auto_snek() {
+                draw_disabled_overlay(context, button);
+            }
+            buttons.push(button);
+            row += 1;
+        }
+        if juicer_visible && !game.juicer_placement_unlocked() {
+            let button = draw_button(
+                context,
+                HudButtonKind::UnlockJuicerPlacement,
+                x + 6.0,
+                y + header_height + 4.0 + row as f64 * (HUD_BUTTON_HEIGHT + 4.0),
+                width - 12.0,
+                HUD_BUTTON_HEIGHT,
+                &format!("Juicer {JUICER_PLACEMENT_UNLOCK_COST} jce"),
+            );
+            if !game.can_unlock_juicer_placement() {
+                draw_disabled_overlay(context, button);
+            }
+            buttons.push(button);
+            row += 1;
+        }
+        if splitter_visible && !game.splitter_unlocked() {
+            let button = draw_button(
+                context,
+                HudButtonKind::BuySplitterUnlock,
+                x + 6.0,
+                y + header_height + 4.0 + row as f64 * (HUD_BUTTON_HEIGHT + 4.0),
+                width - 12.0,
+                HUD_BUTTON_HEIGHT,
+                &format!("Splitter {SPLITTER_STATION_UNLOCK_COST} jce"),
+            );
+            if !game.can_unlock_splitter_station() {
+                draw_disabled_overlay(context, button);
+            }
+            buttons.push(button);
+            row += 1;
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    if cheat {
+        let apls = draw_button(
+            context,
+            HudButtonKind::DebugAdd10Apls,
+            x + 6.0,
+            y + header_height + 4.0 + row as f64 * (HUD_BUTTON_HEIGHT + 4.0),
+            width - 12.0,
+            HUD_BUTTON_HEIGHT,
+            "+10 apls",
+        );
+        buttons.push(apls);
+        row += 1;
+        if game.juice_discovered() {
+            let juice = draw_button(
+                context,
+                HudButtonKind::DebugAdd10Juice,
+                x + 6.0,
+                y + header_height + 4.0 + row as f64 * (HUD_BUTTON_HEIGHT + 4.0),
+                width - 12.0,
+                HUD_BUTTON_HEIGHT,
+                "+10 juice",
+            );
+            buttons.push(juice);
+        }
     }
 }
 
@@ -1567,52 +2195,48 @@ fn measure_text(context: &CanvasRenderingContext2d, text: &str, fallback_char_wi
 fn draw_bottom_toolbar(
     context: &CanvasRenderingContext2d,
     layout: SnekLayout,
-    shop_open: bool,
+    game: &SnekState,
+    collapsed: bool,
     buttons: &mut Vec<HudButton>,
 ) {
-    let x = (layout.width - HUD_MARGIN - ICON_BUTTON_SIZE).max(HUD_MARGIN);
-    let y = (layout.height - HUD_MARGIN - ICON_BUTTON_SIZE).max(HUD_MARGIN);
-    let shop = draw_icon_button(
-        context,
-        HudButtonKind::ShopToggle,
-        x,
-        y,
-        if shop_open { "#d9f5de" } else { "#ffffff" },
-    );
-    buttons.push(shop);
+    if !game.toolbelt_available() {
+        return;
+    }
+    draw_station_toolbelt(context, layout, game, collapsed, buttons);
 }
 
 #[cfg(target_arch = "wasm32")]
-fn draw_upgrade_shop(
+fn draw_station_toolbelt(
     context: &CanvasRenderingContext2d,
     layout: SnekLayout,
     game: &SnekState,
-    cheat: bool,
+    collapsed: bool,
     buttons: &mut Vec<HudButton>,
 ) {
-    let width = (layout.width - HUD_MARGIN * 2.0).min(620.0);
-    let station_columns = if game.splitter_unlocked() {
-        (((width - 20.0 + STATION_OPTION_GAP) / (STATION_OPTION_WIDTH + STATION_OPTION_GAP)).floor()
-            as usize)
-            .clamp(1, StationDesign::ALL.len())
-    } else {
-        0
-    };
-    let station_rows = if station_columns == 0 {
-        0
-    } else {
-        StationDesign::ALL.len().div_ceil(station_columns)
-    };
-    let station_grid_height = if station_rows == 0 {
-        0.0
-    } else {
-        STATION_OPTION_HEIGHT * station_rows as f64
-            + STATION_OPTION_GAP * station_rows.saturating_sub(1) as f64
-            + 12.0
-    };
-    let height = 70.0 + HUD_BUTTON_HEIGHT + station_grid_height;
-    let x = ((layout.width - width) / 2.0).max(HUD_MARGIN);
-    let y = (layout.height - height - HUD_MARGIN - ICON_BUTTON_SIZE - 8.0).max(HUD_MARGIN);
+    let toggle_size = 44.0;
+    let toggle_x = layout.width - HUD_MARGIN - toggle_size;
+    let toggle_y = layout.height - HUD_MARGIN - toggle_size;
+    draw_toolbar_chevron(context, toggle_x, toggle_y, collapsed);
+    if collapsed {
+        buttons.push(HudButton {
+            kind: HudButtonKind::ToolbarToggle,
+            x: toggle_x,
+            y: toggle_y,
+            width: toggle_size,
+            height: toggle_size,
+        });
+        return;
+    }
+
+    let available_width = (toggle_x - HUD_MARGIN - TOOLBELT_GAP).max(1.0);
+    let padding = 5.0;
+    let gaps_width = TOOLBELT_GAP * (TOOLBELT_SLOTS - 1) as f64;
+    let slot_size = ((available_width - padding * 2.0 - gaps_width) / TOOLBELT_SLOTS as f64)
+        .clamp(4.0, TOOLBELT_SLOT_SIZE);
+    let width = padding * 2.0 + slot_size * TOOLBELT_SLOTS as f64 + gaps_width;
+    let height = slot_size + padding * 2.0;
+    let x = ((toggle_x - width) / 2.0).max(HUD_MARGIN);
+    let y = (layout.height - height - HUD_MARGIN).max(HUD_MARGIN);
     context.set_fill_style_str("rgba(255, 255, 255, 0.96)");
     context.fill_rect(x, y, width, height);
     context.set_stroke_style_str("#111111");
@@ -1625,115 +2249,68 @@ fn draw_upgrade_shop(
         width,
         height,
     });
-    context.set_fill_style_str("#111111");
-    context.set_font("800 13px ui-monospace, SFMono-Regular, Consolas, monospace");
-    let _ = context.fill_text("Shop", x + 10.0, y + 20.0);
-    if game.pending_snek_orders() > 0 {
-        context.set_font("700 11px ui-monospace, SFMono-Regular, Consolas, monospace");
-        let _ = context.fill_text(
-            &format!("queued {}", game.pending_snek_orders()),
-            x + 58.0,
-            y + 20.0,
-        );
+
+    let mut unlocked = Vec::new();
+    if game.juicer_placement_unlocked() {
+        unlocked.push(StationDesign::Juicer);
     }
-
-    #[cfg(debug_assertions)]
-    if cheat {
-        let debug = draw_button(
-            context,
-            HudButtonKind::DebugAdd10,
-            x + width - 72.0,
-            y + 4.0,
-            62.0,
-            22.0,
-            "+10",
-        );
-        buttons.push(debug);
+    if game.splitter_unlocked() {
+        unlocked.push(StationDesign::Splitter);
     }
-
-    #[cfg(not(debug_assertions))]
-    let _ = cheat;
-
-    let mut button_x = x + 10.0;
-    let button_y = y + 34.0;
-    if !game.auto_snek_unlocked() {
-        let auto = draw_button(
-            context,
-            HudButtonKind::AutoSnek,
-            button_x,
-            button_y,
-            150.0,
-            HUD_BUTTON_HEIGHT,
-            &format!("Auto Snek {AUTO_SNEK_COST}"),
-        );
-        if !game.can_buy_auto_snek() {
-            draw_disabled_overlay(context, auto);
-        }
-        buttons.push(auto);
-    } else if !game.splitter_unlocked() {
-        let unlock = draw_button(
-            context,
-            HudButtonKind::BuySplitterUnlock,
-            button_x,
-            button_y,
-            160.0,
-            HUD_BUTTON_HEIGHT,
-            &format!("Cutter {SPLITTER_STATION_UNLOCK_COST}"),
-        );
-        if !game.can_unlock_splitter_station() {
-            draw_disabled_overlay(context, unlock);
-        }
-        buttons.push(unlock);
-    } else {
-        let buy_snek = draw_button(
-            context,
-            HudButtonKind::BuySnek,
-            button_x,
-            button_y,
-            SHOP_BUTTON_WIDTH,
-            HUD_BUTTON_HEIGHT,
-            &format!("Snek {MIN_SNEK_LEN}"),
-        );
-        if !game.can_buy_snek() {
-            draw_disabled_overlay(context, buy_snek);
-        }
-        buttons.push(buy_snek);
-        button_x += SHOP_BUTTON_WIDTH + STATION_OPTION_GAP;
-
-        let buy_apple = draw_button(
-            context,
-            HudButtonKind::BuyApple,
-            button_x,
-            button_y,
-            SHOP_BUTTON_WIDTH,
-            HUD_BUTTON_HEIGHT,
-            &format!("Apple {APPLE_COST}"),
-        );
-        if !game.can_buy_apple() {
-            draw_disabled_overlay(context, buy_apple);
-        }
-        buttons.push(buy_apple);
-
-        let station_y = button_y + HUD_BUTTON_HEIGHT + 10.0;
-        for (index, design) in StationDesign::ALL.into_iter().enumerate() {
-            let col = index % station_columns;
-            let row = index / station_columns;
-            let option_x = x + 10.0 + col as f64 * (STATION_OPTION_WIDTH + STATION_OPTION_GAP);
-            let option_y = station_y + row as f64 * (STATION_OPTION_HEIGHT + STATION_OPTION_GAP);
-            let button = HudButton {
+    for index in 0..TOOLBELT_SLOTS {
+        let button = HudButton {
+            kind: HudButtonKind::PanelBlocker,
+            x: x + padding + index as f64 * (slot_size + TOOLBELT_GAP),
+            y: y + padding,
+            width: slot_size,
+            height: slot_size,
+        };
+        if let Some(design) = unlocked.get(index).copied() {
+            let option = HudButton {
                 kind: HudButtonKind::StationOption(design),
-                x: option_x,
-                y: option_y,
-                width: STATION_OPTION_WIDTH,
-                height: STATION_OPTION_HEIGHT,
+                ..button
             };
-            draw_station_option(context, button, design);
-            if game.can_place_splitter_station() {
-                buttons.push(button);
-            } else {
-                draw_disabled_overlay(context, button);
-            }
+            draw_station_option(context, option, design);
+            buttons.push(HudButton {
+                y: option.y - (44.0 - slot_size) / 2.0,
+                height: 44.0,
+                ..option
+            });
+        } else {
+            context.set_stroke_style_str("rgba(17, 17, 17, 0.35)");
+            context.set_line_width(1.0);
+            context.stroke_rect(
+                button.x + 0.5,
+                button.y + 0.5,
+                slot_size - 1.0,
+                slot_size - 1.0,
+            );
         }
+    }
+    buttons.push(HudButton {
+        kind: HudButtonKind::ToolbarToggle,
+        x: toggle_x,
+        y: toggle_y,
+        width: toggle_size,
+        height: toggle_size,
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+fn draw_toolbar_chevron(context: &CanvasRenderingContext2d, x: f64, y: f64, collapsed: bool) {
+    let (tip_y, edge_y) = if collapsed {
+        (y + 14.0, y + 28.0)
+    } else {
+        (y + 30.0, y + 16.0)
+    };
+    for (color, width) in [("#000000", 6.0), ("#ffffff", 3.0)] {
+        context.set_stroke_style_str(color);
+        context.set_line_width(width);
+        context.begin_path();
+        context.move_to(x + 10.0, edge_y);
+        context.line_to(x + 22.0, tip_y);
+        context.line_to(x + 34.0, edge_y);
+        context.stroke();
     }
 }
 
@@ -1742,14 +2319,13 @@ fn draw_population_menu(
     context: &CanvasRenderingContext2d,
     layout: SnekLayout,
     game: &SnekState,
+    scroll: f64,
     buttons: &mut Vec<HudButton>,
 ) {
-    let width = (layout.width - HUD_MARGIN * 2.0).min(360.0);
-    let x = ((layout.width - width) / 2.0).max(HUD_MARGIN);
+    let (x, y, width, height) = population_panel_rect(layout, game);
     let groups = snek_length_groups(game);
-    let row_height = 22.0;
-    let height = 38.0 + row_height * groups.len().max(1) as f64;
-    let y = (layout.height - height - HUD_MARGIN - ICON_BUTTON_SIZE - 8.0).max(HUD_MARGIN);
+    let row_height = 38.0;
+    let max_snek_len = game.max_snek_len().unwrap_or(MIN_SNEK_LEN + 1);
     context.set_fill_style_str("rgba(255, 255, 255, 0.96)");
     context.fill_rect(x, y, width, height);
     context.set_stroke_style_str("#111111");
@@ -1765,16 +2341,123 @@ fn draw_population_menu(
 
     context.set_fill_style_str("#111111");
     context.set_font("800 13px ui-monospace, SFMono-Regular, Consolas, monospace");
-    let _ = context.fill_text("Population", x + 10.0, y + 20.0);
+    let _ = context.fill_text("Population Management", x + 10.0, y + 20.0);
+    let close = draw_button(
+        context,
+        HudButtonKind::PopulationClose,
+        x + width - 38.0,
+        y + 5.0,
+        30.0,
+        26.0,
+        "x",
+    );
+    buttons.push(HudButton {
+        x: close.x - 7.0,
+        y: close.y - 9.0,
+        width: 44.0,
+        height: 44.0,
+        ..close
+    });
+    let max_y = y + 47.0;
     context.set_font("700 12px ui-monospace, SFMono-Regular, Consolas, monospace");
-    if groups.is_empty() {
-        let _ = context.fill_text("1 x length 3", x + 10.0, y + 44.0);
-        return;
+    let _ = context.fill_text(
+        &game.max_snek_len().map_or_else(
+            || "max unset".to_string(),
+            |max| format!("max length {max}"),
+        ),
+        x + 52.0,
+        max_y,
+    );
+    let down = draw_button(
+        context,
+        HudButtonKind::MaxLengthDown,
+        x + 8.0,
+        y + 27.0,
+        36.0,
+        28.0,
+        "v",
+    );
+    let up = draw_button(
+        context,
+        HudButtonKind::MaxLengthUp,
+        x + width - 44.0,
+        y + 27.0,
+        36.0,
+        28.0,
+        "^",
+    );
+    buttons.extend([down, up]);
+
+    let content_top = y + 62.0;
+    let content_bottom = y + height - 8.0;
+    let scroll = scroll.clamp(0.0, population_max_scroll(layout, game));
+    for (row, length) in (MIN_SNEK_LEN..max_snek_len).rev().enumerate() {
+        let row_y = content_top + row as f64 * row_height - scroll;
+        if row_y < content_top || row_y + 34.0 > content_bottom {
+            continue;
+        }
+        let current = groups
+            .iter()
+            .find_map(|(group_len, count)| (*group_len == length).then_some(*count))
+            .unwrap_or(0);
+        let target = game
+            .length_targets()
+            .iter()
+            .find_map(|item| (item.length() == length).then_some(item.count()))
+            .unwrap_or(0);
+        let _ = context.fill_text(
+            &format!("len {length:<3} {current} now  {target} target"),
+            x + 48.0,
+            row_y + 19.0,
+        );
+        let down = draw_button(
+            context,
+            HudButtonKind::TargetDown(length),
+            x + 8.0,
+            row_y,
+            36.0,
+            34.0,
+            "-",
+        );
+        let up = draw_button(
+            context,
+            HudButtonKind::TargetUp(length),
+            x + width - 44.0,
+            row_y,
+            36.0,
+            34.0,
+            "+",
+        );
+        buttons.extend([down, up]);
     }
-    for (row, (len, count)) in groups.into_iter().enumerate() {
-        let line_y = y + 44.0 + row as f64 * row_height;
-        let _ = context.fill_text(&format!("{count} x length {len}"), x + 10.0, line_y);
-    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn population_panel_rect(layout: SnekLayout, game: &SnekState) -> (f64, f64, f64, f64) {
+    let width = (layout.width - HUD_MARGIN * 2.0).min(360.0);
+    let x = ((layout.width - width) / 2.0).max(HUD_MARGIN);
+    let row_height = 38.0;
+    let max_snek_len = game.max_snek_len().unwrap_or(MIN_SNEK_LEN + 1);
+    let target_rows = max_snek_len.saturating_sub(MIN_SNEK_LEN);
+    let height = (72.0 + row_height * target_rows as f64)
+        .min(layout.height - HUD_MARGIN * 2.0 - STATION_OPTION_HEIGHT - 20.0);
+    let toolbelt_clearance = if game.juicer_unlocked() {
+        STATION_OPTION_HEIGHT + 20.0
+    } else {
+        ICON_BUTTON_SIZE + 8.0
+    };
+    let y = (layout.height - height - HUD_MARGIN - toolbelt_clearance).max(HUD_MARGIN);
+    (x, y, width, height)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn population_max_scroll(layout: SnekLayout, game: &SnekState) -> f64 {
+    let (_, _, _, height) = population_panel_rect(layout, game);
+    let rows = game
+        .max_snek_len()
+        .unwrap_or(MIN_SNEK_LEN + 1)
+        .saturating_sub(MIN_SNEK_LEN);
+    (rows as f64 * 38.0 - (height - 70.0)).max(0.0)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1815,8 +2498,9 @@ fn draw_station_draft_controls(
     rows: usize,
     buttons: &mut Vec<HudButton>,
 ) {
-    let station_width = station_cols(draft.rotation) as f64 * CELL_SIZE * camera.zoom;
-    let station_height = station_rows(draft.rotation) as f64 * CELL_SIZE * camera.zoom;
+    let station_width = station_cols(draft.design, draft.rotation) as f64 * CELL_SIZE * camera.zoom;
+    let station_height =
+        station_rows(draft.design, draft.rotation) as f64 * CELL_SIZE * camera.zoom;
     let button_gap = 6.0;
     let button_total_width = ICON_BUTTON_SIZE * 3.0 + button_gap * 2.0;
     let (offset_x, offset_y) = board_screen_offset(layout, camera, cols, rows);
@@ -1919,6 +2603,19 @@ fn draw_button(
     context.stroke_rect(x + 1.0, y + 1.0, width - 2.0, height - 2.0);
     context.set_fill_style_str("#111111");
     context.set_font("700 13px ui-monospace, SFMono-Regular, Consolas, monospace");
+    let measured = context
+        .measure_text(label)
+        .ok()
+        .map(|metrics| metrics.width())
+        .unwrap_or(0.0);
+    let fitted_size = if measured > width - 20.0 {
+        (13.0 * (width - 20.0).max(1.0) / measured).max(1.0)
+    } else {
+        13.0
+    };
+    context.set_font(&format!(
+        "700 {fitted_size}px ui-monospace, SFMono-Regular, Consolas, monospace"
+    ));
     let _ = context.fill_text(label, x + 10.0, y + height / 2.0 + 5.0);
 
     HudButton {
@@ -1957,16 +2654,24 @@ fn draw_icon_button(
         HudButtonKind::CancelStation => draw_x_icon(context, x, y),
         HudButtonKind::MoveStation => draw_move_icon(context, x, y),
         HudButtonKind::DeleteStation => draw_delete_icon(context, x, y),
-        HudButtonKind::ShopToggle => draw_shop_icon(context, x, y),
+        HudButtonKind::PopulationToggle => draw_population_icon(context, x, y),
         _ => {}
     }
 
     HudButton {
         kind,
-        x,
-        y,
-        width: ICON_BUTTON_SIZE,
-        height: ICON_BUTTON_SIZE,
+        x: x - 5.0,
+        y: y - 5.0,
+        width: ICON_BUTTON_SIZE + 10.0,
+        height: ICON_BUTTON_SIZE + 10.0,
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn draw_population_icon(context: &CanvasRenderingContext2d, x: f64, y: f64) {
+    context.set_fill_style_str("#63ad5b");
+    for (dx, dy) in [(9.0, 18.0), (16.0, 11.0), (23.0, 18.0)] {
+        context.fill_rect(x + dx - 3.0, y + dy - 3.0, 7.0, 7.0);
     }
 }
 
@@ -2053,25 +2758,6 @@ fn draw_delete_icon(context: &CanvasRenderingContext2d, x: f64, y: f64) {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn draw_shop_icon(context: &CanvasRenderingContext2d, x: f64, y: f64) {
-    context.begin_path();
-    context.move_to(x + 9.0, y + 14.0);
-    context.line_to(x + 25.0, y + 14.0);
-    context.line_to(x + 23.0, y + 27.0);
-    context.line_to(x + 11.0, y + 27.0);
-    context.close_path();
-    context.stroke();
-    context.begin_path();
-    context.move_to(x + 13.0, y + 14.0);
-    context.line_to(x + 13.0, y + 9.0);
-    context.line_to(x + 21.0, y + 9.0);
-    context.line_to(x + 21.0, y + 14.0);
-    context.move_to(x + 13.0, y + 20.0);
-    context.line_to(x + 21.0, y + 20.0);
-    context.stroke();
-}
-
-#[cfg(target_arch = "wasm32")]
 fn draw_station_option(
     context: &CanvasRenderingContext2d,
     button: HudButton,
@@ -2088,12 +2774,13 @@ fn draw_station_option(
         button.height - 2.0,
     );
 
-    let icon_cell = ((button.width - 12.0) / SPLITTER_STATION_COLS as f64)
-        .min((button.height - 12.0) / SPLITTER_STATION_ROWS as f64);
+    let cols = station_cols(design, 0);
+    let rows = station_rows(design, 0);
+    let icon_cell = ((button.width - 12.0) / cols as f64).min((button.height - 12.0) / rows as f64);
     draw_station_pixels(
         context,
-        button.x + (button.width - SPLITTER_STATION_COLS as f64 * icon_cell) / 2.0,
-        button.y + (button.height - SPLITTER_STATION_ROWS as f64 * icon_cell) / 2.0,
+        button.x + (button.width - cols as f64 * icon_cell) / 2.0,
+        button.y + (button.height - rows as f64 * icon_cell) / 2.0,
         design,
         0,
         icon_cell,
@@ -2107,6 +2794,8 @@ fn draw_station(
     station: SplitterStation,
     cell_size: f64,
     alpha: f64,
+    animation_t: f64,
+    juicer_activity: Option<f64>,
 ) {
     draw_station_pixels(
         context,
@@ -2117,6 +2806,143 @@ fn draw_station(
         cell_size,
         alpha,
     );
+    if station.design() == StationDesign::Juicer {
+        draw_juicer_slurry(context, station, animation_t, alpha, juicer_activity);
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn draw_juicer_slurry(
+    context: &CanvasRenderingContext2d,
+    station: SplitterStation,
+    animation_t: f64,
+    alpha: f64,
+    activity: Option<f64>,
+) {
+    let Some(activity) = activity else {
+        return;
+    };
+    let center = station.origin();
+    let (local_col, local_row) = match station.rotation() {
+        1 => (7.0, 7.0),
+        2 => (2.0, 7.0),
+        3 => (2.0, 2.0),
+        _ => (7.0, 2.0),
+    };
+    let center_x = (center.col as f64 + local_col) * CELL_SIZE;
+    let center_y = (center.row as f64 + local_row) * CELL_SIZE;
+    context.save();
+    context.set_global_alpha(alpha);
+    context.begin_path();
+    context.rect(
+        center_x - CELL_SIZE,
+        center_y - CELL_SIZE,
+        CELL_SIZE * 2.0,
+        CELL_SIZE * 2.0,
+    );
+    context.clip();
+    let intensity = (activity * 2.0).min(1.0);
+    for index in 0..7 {
+        let phase = animation_t * (0.55 + index as f64 * 0.04) + index as f64 * 0.91;
+        let orbit = CELL_SIZE * (0.12 + intensity * (0.16 + (index % 3) as f64 * 0.04));
+        let lobe = CELL_SIZE * (0.24 + intensity * 0.22 + (phase * 1.7).sin().abs() * 0.08);
+        context.set_fill_style_str(match index % 4 {
+            0 => "rgba(93, 15, 24, 0.94)",
+            1 => "rgba(151, 27, 36, 0.92)",
+            2 => "rgba(116, 19, 28, 0.94)",
+            _ => "rgba(188, 55, 58, 0.86)",
+        });
+        context.begin_path();
+        context
+            .arc(
+                center_x + phase.cos() * orbit,
+                center_y + phase.sin() * orbit * 0.72,
+                lobe,
+                0.0,
+                std::f64::consts::TAU,
+            )
+            .ok();
+        context.fill();
+    }
+    for index in 0..3 {
+        let phase = -animation_t * 0.8 + index as f64 * 2.1;
+        let radius = CELL_SIZE * (0.18 + intensity * 0.38);
+        let size = CELL_SIZE * (0.09 + index as f64 * 0.025);
+        context.set_fill_style_str(if index == 1 { "#8fc45d" } else { "#4f8f3f" });
+        context.fill_rect(
+            center_x + phase.cos() * radius - size / 2.0,
+            center_y + phase.sin() * radius * 0.7 - size / 2.0,
+            size,
+            size,
+        );
+    }
+    context.set_fill_style_str("rgba(52, 8, 15, 0.86)");
+    context.begin_path();
+    context
+        .arc(
+            center_x,
+            center_y + CELL_SIZE * 0.42,
+            CELL_SIZE * (0.11 + intensity * 0.05),
+            0.0,
+            std::f64::consts::TAU,
+        )
+        .ok();
+    context.fill();
+    context.restore();
+}
+
+#[cfg(target_arch = "wasm32")]
+fn draw_construction_packets(
+    context: &CanvasRenderingContext2d,
+    station: SplitterStation,
+    progress: f64,
+) {
+    let bar_x = station.origin().col as f64 * CELL_SIZE;
+    let bar_y = station.origin().row as f64 * CELL_SIZE - 7.0;
+    let bar_width = station.width() as f64 * CELL_SIZE;
+    context.set_fill_style_str("rgba(17, 17, 17, 0.78)");
+    context.fill_rect(bar_x, bar_y, bar_width, 5.0);
+    context.set_fill_style_str("#f1c84b");
+    context.fill_rect(bar_x + 1.0, bar_y + 1.0, (bar_width - 2.0) * progress, 3.0);
+
+    let packet_count = (progress * 4.0).ceil().clamp(1.0, 4.0) as usize;
+    let x = station.origin().col as f64 * CELL_SIZE + CELL_SIZE * 0.35;
+    let y = station.origin().row as f64 * CELL_SIZE + CELL_SIZE * 0.35;
+    for index in 0..packet_count {
+        let px = x + (index % 2) as f64 * CELL_SIZE * 0.72;
+        let py = y + (index / 2) as f64 * CELL_SIZE * 0.72;
+        let size = CELL_SIZE * 0.62;
+        context.set_fill_style_str("#f1c84b");
+        context.fill_rect(px, py, size, size);
+        context.set_stroke_style_str("#ffffff");
+        context.set_line_width(1.5);
+        context.begin_path();
+        context.move_to(px + size / 2.0, py);
+        context.line_to(px + size / 2.0, py + size);
+        context.move_to(px, py + size / 2.0);
+        context.line_to(px + size, py + size / 2.0);
+        context.stroke();
+        context.begin_path();
+        context
+            .arc(
+                px + size * 0.38,
+                py - 1.0,
+                size * 0.16,
+                0.0,
+                std::f64::consts::TAU,
+            )
+            .ok();
+        context
+            .arc(
+                px + size * 0.62,
+                py - 1.0,
+                size * 0.16,
+                0.0,
+                std::f64::consts::TAU,
+            )
+            .ok();
+        context.stroke();
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -2131,8 +2957,8 @@ fn draw_station_pixels(
 ) {
     let previous_alpha = context.global_alpha();
     context.set_global_alpha(alpha);
-    let cols = station_cols(rotation);
-    let rows = station_rows(rotation);
+    let cols = station_cols(design, rotation);
+    let rows = station_rows(design, rotation);
     for row in 0..rows {
         for col in 0..cols {
             let ch = station_pixel(design, row, col, rotation).unwrap_or(' ');
@@ -2140,11 +2966,13 @@ fn draw_station_pixels(
                 continue;
             }
             let color = match ch {
-                '1' => "#343941",
-                '2' => "#d89a2b",
-                '3' => "#a9413d",
                 '0' => "#9ca4a6",
-                _ => "#f4f4f4",
+                '#' => "#343941",
+                'G' => "#bd8128",
+                'B' => "#9d3431",
+                'A' => "#4b5258",
+                'S' | 'D' => "#202429",
+                _ => "#343941",
             };
             context.set_fill_style_str(color);
             context.fill_rect(
@@ -2163,7 +2991,7 @@ fn draw_station_pixels(
                     cell_size - 1.0,
                 );
             }
-            if ch == '2' {
+            if ch == 'G' {
                 context.set_fill_style_str("#f0bd55");
                 context.fill_rect(
                     x + col as f64 * cell_size + cell_size * 0.24,
@@ -2171,7 +2999,14 @@ fn draw_station_pixels(
                     cell_size * 0.52,
                     cell_size * 0.52,
                 );
-            } else if ch == '3' {
+                context.set_fill_style_str("#343941");
+                context.fill_rect(
+                    x + col as f64 * cell_size + cell_size * 0.4,
+                    y + row as f64 * cell_size + cell_size * 0.4,
+                    cell_size * 0.2,
+                    cell_size * 0.2,
+                );
+            } else if ch == 'B' {
                 context.set_fill_style_str("#d8dde0");
                 context.fill_rect(
                     x + col as f64 * cell_size + cell_size * 0.38,
@@ -2179,10 +3014,56 @@ fn draw_station_pixels(
                     cell_size * 0.24,
                     cell_size * 0.76,
                 );
+            } else if ch == 'A' {
+                context.set_fill_style_str("#747d84");
+                context.fill_rect(
+                    x + col as f64 * cell_size + cell_size * 0.12,
+                    y + row as f64 * cell_size + cell_size * 0.16,
+                    cell_size * 0.76,
+                    cell_size * 0.22,
+                );
+            } else if ch == 'D' {
+                context.set_stroke_style_str("#8b9498");
+                context.set_line_width((cell_size * 0.12).max(1.0));
+                context.begin_path();
+                context
+                    .arc(
+                        x + (col as f64 + 0.5) * cell_size,
+                        y + (row as f64 + 0.5) * cell_size,
+                        cell_size * 0.22,
+                        0.0,
+                        std::f64::consts::TAU,
+                    )
+                    .ok();
+                context.stroke();
             }
         }
     }
     context.set_global_alpha(previous_alpha);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn draw_station_invalid_overlay(
+    context: &CanvasRenderingContext2d,
+    x: f64,
+    y: f64,
+    design: StationDesign,
+    rotation: u8,
+    cell_size: f64,
+) {
+    context.set_fill_style_str("rgba(207, 43, 43, 0.58)");
+    for row in 0..station_rows(design, rotation) {
+        for col in 0..station_cols(design, rotation) {
+            if station_pixel(design, row, col, rotation).is_some_and(|tile| tile != ' ') {
+                context.fill_rect(
+                    x + col as f64 * cell_size,
+                    y + row as f64 * cell_size,
+                    cell_size - 1.0,
+                    cell_size - 1.0,
+                );
+            }
+        }
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -2191,21 +3072,13 @@ fn station_pixel(design: StationDesign, row: usize, col: usize, rotation: u8) ->
 }
 
 #[cfg(target_arch = "wasm32")]
-fn station_cols(rotation: u8) -> usize {
-    if rotation.is_multiple_of(2) {
-        SPLITTER_STATION_COLS
-    } else {
-        SPLITTER_STATION_ROWS
-    }
+fn station_cols(design: StationDesign, rotation: u8) -> usize {
+    SplitterStation::new(Cell::new(0, 0), rotation, design, usize::MAX, usize::MAX).width()
 }
 
 #[cfg(target_arch = "wasm32")]
-fn station_rows(rotation: u8) -> usize {
-    if rotation.is_multiple_of(2) {
-        SPLITTER_STATION_ROWS
-    } else {
-        SPLITTER_STATION_COLS
-    }
+fn station_rows(design: StationDesign, rotation: u8) -> usize {
+    SplitterStation::new(Cell::new(0, 0), rotation, design, usize::MAX, usize::MAX).height()
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -2223,6 +3096,7 @@ fn draw_station_access(
     context: &CanvasRenderingContext2d,
     station: SplitterStation,
     activity: Option<SplitterActivity>,
+    juicer_active: bool,
 ) {
     draw_door(
         context,
@@ -2232,16 +3106,26 @@ fn draw_station_access(
         "#4c9bd6",
     );
 
+    if station.design() == StationDesign::Juicer {
+        draw_door(
+            context,
+            station.old_exit_cell(),
+            station.old_exit_direction(),
+            f64::from(juicer_active),
+            "#55b96b",
+        );
+        return;
+    }
+
     let (new_exit_open, old_exit_open) =
         activity.map_or((0.0, 0.0), |activity| match activity.phase() {
-            SplitterActivityPhase::Feeding => (door_openness(activity.progress()), 0.0),
-            SplitterActivityPhase::Cutting => (1.0, 0.0),
+            SplitterActivityPhase::Feeding | SplitterActivityPhase::Cutting => (0.0, 0.0),
             SplitterActivityPhase::Releasing => (1.0, 1.0),
         });
     draw_door(
         context,
         station.new_exit_cell(),
-        station.flow_direction(),
+        station.new_exit_direction(),
         new_exit_open,
         "#55b96b",
     );
@@ -2252,11 +3136,6 @@ fn draw_station_access(
         old_exit_open,
         "#55b96b",
     );
-}
-
-#[cfg(target_arch = "wasm32")]
-fn door_openness(progress: f64) -> f64 {
-    (progress * 2.0).clamp(0.0, 1.0)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -2274,30 +3153,20 @@ fn draw_door(
 
     let rectangles = match outward {
         Direction::Left => [
-            (x, y, thickness, leaf),
-            (x, y + CELL_SIZE - leaf, thickness, leaf),
+            (x - thickness, y, thickness, leaf),
+            (x - thickness, y + CELL_SIZE - leaf, thickness, leaf),
         ],
         Direction::Right => [
-            (x + CELL_SIZE - thickness, y, thickness, leaf),
-            (
-                x + CELL_SIZE - thickness,
-                y + CELL_SIZE - leaf,
-                thickness,
-                leaf,
-            ),
+            (x + CELL_SIZE, y, thickness, leaf),
+            (x + CELL_SIZE, y + CELL_SIZE - leaf, thickness, leaf),
         ],
         Direction::Up => [
-            (x, y, leaf, thickness),
-            (x + CELL_SIZE - leaf, y, leaf, thickness),
+            (x, y - thickness, leaf, thickness),
+            (x + CELL_SIZE - leaf, y - thickness, leaf, thickness),
         ],
         Direction::Down => [
-            (x, y + CELL_SIZE - thickness, leaf, thickness),
-            (
-                x + CELL_SIZE - leaf,
-                y + CELL_SIZE - thickness,
-                leaf,
-                thickness,
-            ),
+            (x, y + CELL_SIZE, leaf, thickness),
+            (x + CELL_SIZE - leaf, y + CELL_SIZE, leaf, thickness),
         ],
     };
 
@@ -2325,11 +3194,8 @@ fn draw_station_selection(context: &CanvasRenderingContext2d, station: SplitterS
 #[cfg(target_arch = "wasm32")]
 fn station_label(design: StationDesign) -> &'static str {
     match design {
-        StationDesign::Gate => "Gate splitter",
-        StationDesign::Saw => "Saw splitter",
-        StationDesign::Press => "Press splitter",
-        StationDesign::Butterfly => "Butterfly splitter",
-        StationDesign::Mantis => "Mantis splitter",
+        StationDesign::Juicer => "Juicer",
+        StationDesign::Splitter => "Splitter",
     }
 }
 
@@ -2354,9 +3220,9 @@ fn draw_station_tooltip(
 }
 
 #[cfg(target_arch = "wasm32")]
-fn station_origin_from_point(x: f64, y: f64, rotation: u8) -> Cell {
-    let width_px = station_cols(rotation) as f64 * CELL_SIZE;
-    let height_px = station_rows(rotation) as f64 * CELL_SIZE;
+fn station_origin_from_point(x: f64, y: f64, design: StationDesign, rotation: u8) -> Cell {
+    let width_px = station_cols(design, rotation) as f64 * CELL_SIZE;
+    let height_px = station_rows(design, rotation) as f64 * CELL_SIZE;
     Cell::new(
         ((x - width_px / 2.0).max(0.0) / CELL_SIZE).floor() as usize,
         ((y - height_px / 2.0).max(0.0) / CELL_SIZE).floor() as usize,

@@ -129,6 +129,10 @@ To add a game:
 Snek is experimental and entirely gated by `debug_assertions`. Release builds
 must not contain its command, launch/output variants, storage key, state, view,
 or strings. Bubbles cheat parsing and controls must also compile out in release.
+Snek saves are strict, disposable snapshots; bump the key/schema instead of
+adding pre-1.0 migrations. Its economy stores juice in segment units (ten per
+displayed cup), and both Juicers and Splitters reuse the shared station geometry,
+collision, placement, and dispatch infrastructure.
 
 ## Word Assets
 
@@ -160,16 +164,25 @@ three tracked files.
 ## Build Modes And UI
 
 The project uses Rust 1.88+ and CI pins Trunk 0.21.14. `debug_assertions` changes
-the command registry and compiled game code. The canonical gate runs the normal
-test/check suite once, then verifies release compilation and the built artifact
-rather than duplicating every check in both modes. `Trunk.toml` hashes built
-JS/WASM/CSS; word assets are copied with their own manifest version. `dist/` is
-generated and ignored.
+the command registry and compiled game code. Build phone-test artifacts with
+`trunk build --release --cargo-profile mobile-debug` so Cargo retains debug-only
+features while Trunk optimizes the assets. Never host the unoptimized dev profile
+because its monolithic WASM is prohibitively large on mobile. Normal
+release builds disable debug assertions and must exclude Snek and cheats. The
+canonical gate runs the normal test/check suite once, then verifies release
+compilation and the built artifact rather than duplicating every check in both
+modes. `Trunk.toml` hashes built JS/WASM/CSS; word assets are copied with their
+own manifest version. `dist/` is generated and ignored.
 
 The root `--app-height` is intentionally captured before the mobile keyboard
 opens so terminal games do not shrink. Preserve that behavior when changing
 viewport logic. Keep controls touch-usable and check both desktop and mobile
 layouts for overlap and text clipping.
+
+At the end of frontend work, build the current phone-test artifact once with the
+native host toolchain and serve the immutable output on `0.0.0.0`. Report both
+the localhost and LAN URLs. Do not keep a source-watching server rebuilding
+during implementation churn; replace the stable server only after validation.
 
 ## Required Validation
 

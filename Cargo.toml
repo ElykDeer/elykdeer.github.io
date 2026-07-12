@@ -20,3 +20,9 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"
+
+# Phone-test builds keep debug-only games and controls while retaining release
+# optimization. Normal release builds never enable debug assertions.
+[profile.mobile-debug]
+inherits = "release"
+debug-assertions = true

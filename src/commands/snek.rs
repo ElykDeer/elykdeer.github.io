@@ -3,7 +3,7 @@ use crate::terminal::{GameLaunch, OutputBlock, TerminalContext};
 
 pub struct SnekCommand;
 
-const SNEK_VERSION: &str = "0.x";
+const SNEK_VERSION: &str = "0.14.0";
 
 impl Command for SnekCommand {
     fn name(&self) -> &'static str {

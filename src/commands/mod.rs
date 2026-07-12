@@ -648,7 +648,7 @@ mod tests {
 
         assert_eq!(
             run_line(&mut ctx, "snek version"),
-            vec![OutputBlock::Text("Snek 0.x".to_string())]
+            vec![OutputBlock::Text("Snek 0.14.0".to_string())]
         );
     }
 
