@@ -691,6 +691,14 @@ impl BubbleLayout {
             self.top + self.radius + coord.row as f64 * self.row_gap,
         )
     }
+
+    fn initial_block_corner_distance(&self, rows: usize) -> f64 {
+        let last_row = rows.saturating_sub(1).min(ROWS - 1);
+        let (rightmost_x, bottom_y) = self.center(CellCoord::new(last_row, COLS - 1), 0);
+        let corner_x = rightmost_x + self.radius;
+        let corner_y = bottom_y + self.radius;
+        distance(self.cannon_x, self.cannon_y, corner_x, corner_y)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -732,9 +740,7 @@ const DROP_SLIDE: f64 = 0.20;
 /// less than that lets a shot slip a bit further into a gap before snapping.
 const COLLISION_TOLERANCE: f64 = 1.55;
 const SHOT_CAST_STEP_RADIUS: f64 = 0.42;
-const DEFAULT_TRACE_DISTANCE_RADIUS: f64 = 22.0;
-const LEVEL_ONE_TRACE_MULTIPLIER: f64 = 2.0;
-const BANK_DISTANCE_PER_LEVEL_RADIUS: f64 = 4.0;
+const RETICLE_DISTANCE_MULTIPLIERS: [f64; 3] = [1.0, 1.5, 2.0];
 const BASE_TRACE_BOUNCES: u8 = 1;
 const FULL_TRACE_BOUNCES: u8 = 80;
 
@@ -782,16 +788,21 @@ struct ShopOption {
     enabled: bool,
 }
 
+fn level_cost(level: u8, costs: &[u64]) -> u64 {
+    costs.get(level as usize).copied().unwrap_or(u64::MAX)
+}
+
 #[derive(Clone, Copy, Debug)]
 struct ShopKitInfo {
     title: &'static str,
     upgrades: &'static [ShopUpgrade],
 }
 
-const SCOUT_KIT_UPGRADES: [ShopUpgrade; 5] = [
+const SCOUT_KIT_UPGRADES: [ShopUpgrade; 6] = [
     ShopUpgrade::QueueSight,
     ShopUpgrade::BankSight,
     ShopUpgrade::Reticle,
+    ShopUpgrade::HoldSlot,
     ShopUpgrade::LandingDot,
     ShopUpgrade::TraceSight,
 ];
@@ -949,7 +960,14 @@ impl CanvasRunner {
     }
 
     fn status_text(&self) -> String {
-        let held = self.game.held.map(color_name).unwrap_or("empty");
+        let held = self
+            .game
+            .held
+            .iter()
+            .take(self.game.available_hold_slots())
+            .map(|held| held.map(color_name).unwrap_or("empty"))
+            .collect::<Vec<_>>()
+            .join(", ");
         format!(
             "Score {}. Best {}. Drop in {}. Current bubble {}. Held {}. {}",
             self.game.score,
@@ -990,11 +1008,7 @@ impl CanvasRunner {
     fn visible_next_colors(&self) -> Vec<BubbleColor> {
         let mut next = self.game.next_colors();
         let queue_level = self.game.run.active_queue_sight_level();
-        let scout_bonus = queue_level > 0
-            && self.game.run.active_bank_sight_level() > 0
-            && self.game.run.active_reticle_level() > 0
-            && self.game.run.active_landing_dot_level() > 0
-            && self.game.run.active_trace_sight_level() > 0;
+        let scout_bonus = self.game.run.scout_kit_complete();
         let visible = 2 + queue_level.min(3) as usize + usize::from(scout_bonus);
         next.truncate(visible);
         next
@@ -1035,10 +1049,14 @@ impl CanvasRunner {
     }
 
     fn hold(&mut self) {
+        self.hold_slot(0);
+    }
+
+    fn hold_slot(&mut self, slot: usize) {
         if self.game.game_over || self.projectile.is_some() {
             return;
         }
-        self.game.hold();
+        self.game.hold(slot);
         self.message = "Held a bubble. Tap hold, right-click, or H to swap.".to_string();
         self.finish_move();
     }
@@ -1067,8 +1085,8 @@ impl CanvasRunner {
         }
 
         let controls = cannon_controls(layout);
-        if distance(x, y, controls.hold_x, controls.hold_y) <= hold_hit_radius(controls) {
-            self.hold();
+        if let Some(slot) = hold_slot_at(controls, self.game.available_hold_slots(), x, y) {
+            self.hold_slot(slot);
         } else {
             self.aim_from_client(client_x, client_y, canvas);
             self.shoot_or_restart();
@@ -1418,7 +1436,7 @@ impl CanvasRunner {
             ShopUpgrade::WildOrb => ShopOption {
                 upgrade,
                 title: "Queue Wilds",
-                cost: 1200 + self.game.run.wild_orb_level as u64 * 600,
+                cost: level_cost(self.game.run.wild_orb_level, &[7000, 13_000, 20_000]),
                 level: self.game.run.wild_orb_level as u32,
                 active_level: self.game.run.active_wild_orb_level() as u32,
                 max_level: upgrade.max_level().map(u32::from),
@@ -1428,7 +1446,7 @@ impl CanvasRunner {
             ShopUpgrade::WildCache => ShopOption {
                 upgrade,
                 title: "Wild Spread",
-                cost: 1700 + self.game.run.wild_cache_level as u64 * 800,
+                cost: level_cost(self.game.run.wild_cache_level, &[14_000, 26_000]),
                 level: self.game.run.wild_cache_level as u32,
                 active_level: self.game.run.active_wild_cache_level() as u32,
                 max_level: upgrade.max_level().map(u32::from),
@@ -1438,7 +1456,7 @@ impl CanvasRunner {
             ShopUpgrade::BombDrop => ShopOption {
                 upgrade,
                 title: "Fuse Rows",
-                cost: 1400 + self.game.run.bomb_drop_level as u64 * 600,
+                cost: level_cost(self.game.run.bomb_drop_level, &[8000, 16_000, 24_000]),
                 level: self.game.run.bomb_drop_level as u32,
                 active_level: self.game.run.active_bomb_drop_level() as u32,
                 max_level: upgrade.max_level().map(u32::from),
@@ -1448,7 +1466,7 @@ impl CanvasRunner {
             ShopUpgrade::BlastRadius => ShopOption {
                 upgrade,
                 title: "Blast Radius",
-                cost: 1800 + self.game.run.bomb_radius_level as u64 * 900,
+                cost: level_cost(self.game.run.bomb_radius_level, &[20_000]),
                 level: self.game.run.bomb_radius_level as u32,
                 active_level: self.game.run.active_bomb_radius_level() as u32,
                 max_level: upgrade.max_level().map(u32::from),
@@ -1508,7 +1526,7 @@ impl CanvasRunner {
             ShopUpgrade::SoftCeiling => ShopOption {
                 upgrade,
                 title: "Soft Ceiling",
-                cost: 900 + self.game.run.drop_delay_level as u64 * 400,
+                cost: level_cost(self.game.run.drop_delay_level, &[5000, 10_000, 16_000]),
                 level: self.game.run.drop_delay_level as u32,
                 active_level: self.game.run.active_drop_delay_level() as u32,
                 max_level: upgrade.max_level().map(u32::from),
@@ -1518,7 +1536,7 @@ impl CanvasRunner {
             ShopUpgrade::DropHaste => ShopOption {
                 upgrade,
                 title: "Fast Drops",
-                cost: 900 + self.game.run.drop_haste_level as u64 * 450,
+                cost: level_cost(self.game.run.drop_haste_level, &[5000, 10_000, 16_000]),
                 level: self.game.run.drop_haste_level as u32,
                 active_level: self.game.run.active_drop_haste_level() as u32,
                 max_level: upgrade.max_level().map(u32::from),
@@ -1528,7 +1546,7 @@ impl CanvasRunner {
             ShopUpgrade::PopDrop => ShopOption {
                 upgrade,
                 title: "Pop Pressure",
-                cost: 1600,
+                cost: 12_000,
                 level: self.game.run.pop_drop_level as u32,
                 active_level: self.game.run.active_pop_drop_level() as u32,
                 max_level: upgrade.max_level().map(u32::from),
@@ -1538,7 +1556,7 @@ impl CanvasRunner {
             ShopUpgrade::CleanStart => ShopOption {
                 upgrade,
                 title: "Clean Start",
-                cost: 1500 + self.game.run.clean_start_level as u64 * 800,
+                cost: level_cost(self.game.run.clean_start_level, &[8000, 16_000, 24_000]),
                 level: self.game.run.clean_start_level as u32,
                 active_level: self.game.run.active_clean_start_level() as u32,
                 max_level: upgrade.max_level().map(u32::from),
@@ -1548,7 +1566,7 @@ impl CanvasRunner {
             ShopUpgrade::ExtraRows => ShopOption {
                 upgrade,
                 title: "More Rows",
-                cost: 1200 + self.game.run.extra_rows_level as u64 * 700,
+                cost: level_cost(self.game.run.extra_rows_level, &[6000, 12_000, 18_000]),
                 level: self.game.run.extra_rows_level as u32,
                 active_level: self.game.run.active_extra_rows_level() as u32,
                 max_level: upgrade.max_level().map(u32::from),
@@ -1558,7 +1576,7 @@ impl CanvasRunner {
             ShopUpgrade::QueueSight => ShopOption {
                 upgrade,
                 title: "Queue Sight",
-                cost: 650 + self.game.run.queue_sight_level as u64 * 350,
+                cost: level_cost(self.game.run.queue_sight_level, &[1500, 5000, 10_000]),
                 level: self.game.run.queue_sight_level as u32,
                 active_level: self.game.run.active_queue_sight_level() as u32,
                 max_level: upgrade.max_level().map(u32::from),
@@ -1568,7 +1586,7 @@ impl CanvasRunner {
             ShopUpgrade::TraceSight => ShopOption {
                 upgrade,
                 title: "Ghost Bubble",
-                cost: 950,
+                cost: 25_000,
                 level: self.game.run.trace_sight_level as u32,
                 active_level: self.game.run.active_trace_sight_level() as u32,
                 max_level: upgrade.max_level().map(u32::from),
@@ -1578,17 +1596,27 @@ impl CanvasRunner {
             ShopUpgrade::Reticle => ShopOption {
                 upgrade,
                 title: "Aim Guide",
-                cost: 700 + self.game.run.reticle_level as u64 * 450,
+                cost: level_cost(self.game.run.reticle_level, &[2500, 7500, 15_000]),
                 level: self.game.run.reticle_level as u32,
                 active_level: self.game.run.active_reticle_level() as u32,
                 max_level: upgrade.max_level().map(u32::from),
                 owned: self.game.run.reticle_level > 0,
                 enabled: self.game.run.active_reticle_level() > 0,
             },
+            ShopUpgrade::HoldSlot => ShopOption {
+                upgrade,
+                title: "Hold Slot",
+                cost: 50_000,
+                level: self.game.run.hold_slot_level as u32,
+                active_level: self.game.run.active_hold_slot_level() as u32,
+                max_level: upgrade.max_level().map(u32::from),
+                owned: self.game.run.hold_slot_level > 0,
+                enabled: self.game.run.active_hold_slot_level() > 0,
+            },
             ShopUpgrade::LandingDot => ShopOption {
                 upgrade,
                 title: "Landing Dot",
-                cost: 850,
+                cost: 5000,
                 level: self.game.run.landing_dot_level as u32,
                 active_level: self.game.run.active_landing_dot_level() as u32,
                 max_level: upgrade.max_level().map(u32::from),
@@ -1598,7 +1626,7 @@ impl CanvasRunner {
             ShopUpgrade::PrizeBubbles => ShopOption {
                 upgrade,
                 title: "Prize Bubbles",
-                cost: 1500 + self.game.run.prize_bubble_level as u64 * 650,
+                cost: level_cost(self.game.run.prize_bubble_level, &[12_000, 22_000, 34_000]),
                 level: self.game.run.prize_bubble_level as u32,
                 active_level: self.game.run.active_prize_bubble_level() as u32,
                 max_level: upgrade.max_level().map(u32::from),
@@ -1608,7 +1636,7 @@ impl CanvasRunner {
             ShopUpgrade::PrizeQuality => ShopOption {
                 upgrade,
                 title: "Prize Quality",
-                cost: 1300 + self.game.run.prize_quality_level as u64 * 700,
+                cost: level_cost(self.game.run.prize_quality_level, &[14_000, 24_000, 38_000]),
                 level: self.game.run.prize_quality_level as u32,
                 active_level: self.game.run.active_prize_quality_level() as u32,
                 max_level: upgrade.max_level().map(u32::from),
@@ -1628,7 +1656,10 @@ impl CanvasRunner {
             ShopUpgrade::LightningPower => ShopOption {
                 upgrade,
                 title: "Storm Channel",
-                cost: 1700 + self.game.run.lightning_power_level as u64 * 800,
+                cost: level_cost(
+                    self.game.run.lightning_power_level,
+                    &[12_000, 20_000, 32_000],
+                ),
                 level: self.game.run.lightning_power_level as u32,
                 active_level: self.game.run.active_lightning_power_level() as u32,
                 max_level: upgrade.max_level().map(u32::from),
@@ -1638,7 +1669,7 @@ impl CanvasRunner {
             ShopUpgrade::DrillPower => ShopOption {
                 upgrade,
                 title: "Deep Drill",
-                cost: 1500 + self.game.run.drill_power_level as u64 * 700,
+                cost: level_cost(self.game.run.drill_power_level, &[12_000, 20_000, 32_000]),
                 level: self.game.run.drill_power_level as u32,
                 active_level: self.game.run.active_drill_power_level() as u32,
                 max_level: upgrade.max_level().map(u32::from),
@@ -1648,7 +1679,7 @@ impl CanvasRunner {
             ShopUpgrade::BankSight => ShopOption {
                 upgrade,
                 title: "Bank Preview",
-                cost: 700 + self.game.run.bank_sight_level as u64 * 300,
+                cost: level_cost(self.game.run.bank_sight_level, &[2000, 5000, 10_000]),
                 level: self.game.run.bank_sight_level as u32,
                 active_level: self.game.run.active_bank_sight_level() as u32,
                 max_level: upgrade.max_level().map(u32::from),
@@ -1696,9 +1727,10 @@ impl CanvasRunner {
             self.aim_angle,
             self.game.current_color(),
             self.game.run.active_trace_sight_level(),
-            1 + self.game.run.active_reticle_level(),
+            self.game.run.active_reticle_level(),
             self.game.run.active_landing_dot_level(),
             self.game.run.active_bank_sight_level(),
+            self.game.initial_rows(),
         );
         draw_board(&context, layout, &self.game.board, row_offset);
         draw_particles(&context, layout, &self.particles);
@@ -1709,6 +1741,7 @@ impl CanvasRunner {
             self.game.current_color(),
             self.visible_next_colors(),
             self.game.held,
+            self.game.available_hold_slots(),
         );
 
         if let Some(projectile) = self.projectile {
@@ -2607,12 +2640,27 @@ fn draw_aim(
     guide_level: u8,
     dot_level: u8,
     bank_sight_level: u8,
+    initial_rows: usize,
 ) {
-    let guide_trace = cast_aim_trace(board, layout, angle, guide_level, bank_sight_level);
+    let guide_trace = cast_aim_trace(
+        board,
+        layout,
+        angle,
+        guide_level,
+        bank_sight_level,
+        layout.initial_block_corner_distance(initial_rows),
+    );
     if guide_trace.points.len() >= 2 {
+        context.save();
         context.set_stroke_style_str("rgba(233, 209, 142, 0.42)");
         context.set_line_width(2.0);
         context.set_line_cap("round");
+        let dash = js_sys::Array::new();
+        dash.push(&wasm_bindgen::JsValue::from_f64(1.0));
+        dash.push(&wasm_bindgen::JsValue::from_f64(
+            (layout.radius * 0.38).max(4.0),
+        ));
+        let _ = context.set_line_dash(&dash.into());
         context.begin_path();
         let (start_x, start_y) = guide_trace.points[0];
         context.move_to(start_x, start_y);
@@ -2620,8 +2668,7 @@ fn draw_aim(
             context.line_to(x, y);
         }
         context.stroke();
-        context.set_line_width(1.0);
-        context.set_line_cap("butt");
+        context.restore();
 
         if dot_level > 0 {
             if let Some((x, y)) = guide_trace.points.last().copied() {
@@ -2638,7 +2685,14 @@ fn draw_aim(
     }
 
     if ghost_level > 0 {
-        let ghost_trace = cast_aim_trace(board, layout, angle, 3, bank_sight_level);
+        let ghost_trace = cast_aim_trace(
+            board,
+            layout,
+            angle,
+            3,
+            bank_sight_level,
+            layout.initial_block_corner_distance(initial_rows),
+        );
         if let Some(coord) = ghost_trace.landing {
             let (x, y) = layout.center(coord, board.parity());
             draw_bubble(context, x, y, layout.radius, color, 0.34);
@@ -2651,27 +2705,22 @@ struct AimTrace {
     landing: Option<CellCoord>,
 }
 
-fn aim_trace_config(reticle_level: u8, bank_sight_level: u8) -> (Option<f64>, u8) {
-    let reticle_level = reticle_level.min(2);
+fn aim_trace_config(
+    base_distance: f64,
+    reticle_level: u8,
+    bank_sight_level: u8,
+) -> (Option<f64>, u8) {
+    let reticle_level = reticle_level.min(3);
     let bank_level = bank_sight_level.min(3);
-    let infinite_trace = reticle_level >= 2 || bank_level == 3;
-    let bounces = if infinite_trace {
+    let bounces = if bank_level == 3 {
         FULL_TRACE_BOUNCES
     } else {
         BASE_TRACE_BOUNCES + bank_level
     };
-    let distance = if infinite_trace {
+    let distance = if reticle_level >= 3 {
         None
     } else {
-        let reticle_multiplier = if reticle_level >= 1 {
-            LEVEL_ONE_TRACE_MULTIPLIER
-        } else {
-            1.0
-        };
-        Some(
-            DEFAULT_TRACE_DISTANCE_RADIUS * reticle_multiplier
-                + f64::from(bank_level) * BANK_DISTANCE_PER_LEVEL_RADIUS,
-        )
+        Some(base_distance * RETICLE_DISTANCE_MULTIPLIERS[reticle_level as usize])
     };
     (distance, bounces)
 }
@@ -2682,16 +2731,15 @@ fn cast_aim_trace(
     angle: f64,
     reticle_level: u8,
     bank_sight_level: u8,
+    base_distance: f64,
 ) -> AimTrace {
     let mut x = layout.cannon_x;
     let mut y = layout.cannon_y;
     let mut vx = angle.cos();
     let vy = angle.sin();
-    let (trace_distance_radius, mut bounces_left) =
-        aim_trace_config(reticle_level, bank_sight_level);
-    let max_distance = trace_distance_radius
-        .map(|distance| layout.radius * distance)
-        .unwrap_or_else(|| (layout.width + layout.height) * 4.0);
+    let (trace_distance, mut bounces_left) =
+        aim_trace_config(base_distance, reticle_level, bank_sight_level);
+    let max_distance = trace_distance.unwrap_or_else(|| (layout.width + layout.height) * 4.0);
     let step = layout.radius * SHOT_CAST_STEP_RADIUS;
     let max_steps = (max_distance / step).ceil().max(1.0) as usize;
     let mut points = Vec::with_capacity(max_steps.min(192) + 1);
@@ -2785,13 +2833,25 @@ fn hold_hit_radius(controls: CannonControls) -> f64 {
     (controls.radius * HOLD_HIT_RADIUS_SCALE).max(HOLD_HIT_RADIUS_MIN)
 }
 
+fn hold_slot_x(controls: CannonControls, slot: usize) -> f64 {
+    let separation = controls.gap.max(hold_hit_radius(controls) * 2.0 + 4.0);
+    controls.hold_x - slot as f64 * separation
+}
+
+fn hold_slot_at(controls: CannonControls, available_slots: usize, x: f64, y: f64) -> Option<usize> {
+    (0..available_slots).find(|slot| {
+        distance(x, y, hold_slot_x(controls, *slot), controls.hold_y) <= hold_hit_radius(controls)
+    })
+}
+
 fn draw_cannon(
     context: &CanvasRenderingContext2d,
     layout: BubbleLayout,
     angle: f64,
     color: BubbleColor,
     next: Vec<BubbleColor>,
-    held: Option<BubbleColor>,
+    held: [Option<BubbleColor>; 2],
+    available_hold_slots: usize,
 ) {
     let muzzle_x = layout.cannon_x + angle.cos() * 34.0;
     let muzzle_y = layout.cannon_y + angle.sin() * 34.0;
@@ -2833,23 +2893,41 @@ fn draw_cannon(
         );
     }
 
-    // Held bubble (tap / right-click / H to swap) sits to the left of the cannon.
-    let hold_x = controls.hold_x;
+    // Held bubbles (tap / right-click / H to swap) sit to the left of the cannon.
     context.set_fill_style_str("rgba(199, 223, 201, 0.66)");
-    let _ = context.fill_text(
-        "hold",
-        hold_x - queue_radius,
-        layout.cannon_y - queue_radius - 6.0,
-    );
-    match held {
-        Some(color) => draw_bubble(context, hold_x, layout.cannon_y, queue_radius, color, 1.0),
-        None => {
-            context.set_stroke_style_str("rgba(199, 223, 201, 0.4)");
-            context.begin_path();
-            let _ = context.arc(hold_x, layout.cannon_y, queue_radius, 0.0, PI * 2.0);
-            context.stroke();
+    context.set_font(if available_hold_slots > 1 {
+        "10px SFMono-Regular, Consolas, monospace"
+    } else {
+        "11px SFMono-Regular, Consolas, monospace"
+    });
+    context.set_text_align("center");
+    for (slot, held) in held.iter().take(available_hold_slots).enumerate() {
+        let slot_x = hold_slot_x(controls, slot);
+        context.set_fill_style_str("rgba(199, 223, 201, 0.66)");
+        context.set_font(if available_hold_slots > 1 {
+            "10px SFMono-Regular, Consolas, monospace"
+        } else {
+            "11px SFMono-Regular, Consolas, monospace"
+        });
+        context.set_text_align("center");
+        context.set_text_baseline("alphabetic");
+        let label = if available_hold_slots > 1 {
+            format!("hold {}", slot + 1)
+        } else {
+            "hold".to_string()
+        };
+        let _ = context.fill_text(&label, slot_x, layout.cannon_y - queue_radius - 6.0);
+        match held {
+            Some(color) => draw_bubble(context, slot_x, layout.cannon_y, queue_radius, *color, 1.0),
+            None => {
+                context.set_stroke_style_str("rgba(199, 223, 201, 0.4)");
+                context.begin_path();
+                let _ = context.arc(slot_x, layout.cannon_y, queue_radius, 0.0, PI * 2.0);
+                context.stroke();
+            }
         }
     }
+    context.set_text_align("start");
 }
 
 fn draw_bubble(
@@ -3375,9 +3453,11 @@ fn shop_upgrade_card_help(option: &ShopOption) -> &'static str {
         },
         ShopUpgrade::TraceSight => "Shows a ghost landing bubble.",
         ShopUpgrade::Reticle => match option.level {
-            0 => "Doubles aim guide.",
+            0 => "Aim guide reaches 50% farther.",
+            1 => "Aim guide reaches twice as far.",
             _ => "Full aim guide.",
         },
+        ShopUpgrade::HoldSlot => "Adds a second bubble hold slot.",
         ShopUpgrade::LandingDot => "Shows path endpoint dot.",
         ShopUpgrade::PrizeBubbles => match option.level {
             0 => "10% chance for prize bubbles in drops.",
@@ -3438,6 +3518,7 @@ fn shop_upgrade_micro_help(option: &ShopOption) -> &'static str {
         ShopUpgrade::QueueSight => "Shows more queue.",
         ShopUpgrade::TraceSight => "Ghost landing bubble.",
         ShopUpgrade::Reticle => "Longer aim line.",
+        ShopUpgrade::HoldSlot => "Second hold slot.",
         ShopUpgrade::LandingDot => "Endpoint dot.",
         ShopUpgrade::PrizeBubbles => match option.level {
             0 => "10% prize drops.",
@@ -3906,15 +3987,16 @@ fn drop_reset_ability_help(ability: AbilitySnapshot) -> String {
     format!("Drop Reset: refills the drop counter.{}", extra)
 }
 
-fn permanent_shop_upgrades() -> [ShopUpgrade; 18] {
+fn permanent_shop_upgrades() -> [ShopUpgrade; 19] {
     kit_shop_upgrades()
 }
 
-fn kit_shop_upgrades() -> [ShopUpgrade; 18] {
+fn kit_shop_upgrades() -> [ShopUpgrade; 19] {
     [
         ShopUpgrade::QueueSight,
         ShopUpgrade::BankSight,
         ShopUpgrade::Reticle,
+        ShopUpgrade::HoldSlot,
         ShopUpgrade::LandingDot,
         ShopUpgrade::TraceSight,
         ShopUpgrade::SoftCeiling,
@@ -3967,6 +4049,7 @@ fn consumable_display_title(upgrade: ShopUpgrade, width: f64) -> &'static str {
         ShopUpgrade::ColorCall => "Color Call",
         ShopUpgrade::TraceSight => "Ghost",
         ShopUpgrade::Reticle => "Guide",
+        ShopUpgrade::HoldSlot => "Hold+",
         ShopUpgrade::LandingDot => "Dot",
         ShopUpgrade::DropReset if narrow => "Reset",
         ShopUpgrade::DropReset => "Drop Reset",
@@ -4011,6 +4094,7 @@ fn short_upgrade_label(upgrade: ShopUpgrade) -> &'static str {
         ShopUpgrade::QueueSight => "queue",
         ShopUpgrade::TraceSight => "preview",
         ShopUpgrade::Reticle => "guide",
+        ShopUpgrade::HoldSlot => "hold+",
         ShopUpgrade::LandingDot => "dot",
         ShopUpgrade::PrizeBubbles => "prize",
         ShopUpgrade::BankSight => "bank",
@@ -4045,6 +4129,7 @@ fn compact_owned_chip_label(upgrade: ShopUpgrade, width: f64) -> &'static str {
         ShopUpgrade::QueueSight => "q",
         ShopUpgrade::TraceSight => "ghst",
         ShopUpgrade::Reticle => "guid",
+        ShopUpgrade::HoldSlot => "hld+",
         ShopUpgrade::LandingDot => "dot",
         ShopUpgrade::PrizeBubbles => "?",
         ShopUpgrade::BankSight => "bank",
@@ -4162,25 +4247,61 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reticle_level_one_doubles_default_aim_guide() {
-        let (default_distance, default_bounces) = aim_trace_config(0, 0);
-        let (level_one_distance, level_one_bounces) = aim_trace_config(1, 0);
+    fn reticle_levels_scale_the_initial_board_distance() {
+        let base = 240.0;
 
-        assert_eq!(default_distance, Some(DEFAULT_TRACE_DISTANCE_RADIUS));
-        assert_eq!(
-            level_one_distance,
-            Some(DEFAULT_TRACE_DISTANCE_RADIUS * LEVEL_ONE_TRACE_MULTIPLIER)
-        );
-        assert_eq!(default_bounces, BASE_TRACE_BOUNCES);
-        assert_eq!(level_one_bounces, BASE_TRACE_BOUNCES);
+        assert_eq!(aim_trace_config(base, 0, 0), (Some(240.0), 1));
+        assert_eq!(aim_trace_config(base, 1, 0), (Some(360.0), 1));
+        assert_eq!(aim_trace_config(base, 2, 0), (Some(480.0), 1));
+        assert_eq!(aim_trace_config(base, 3, 0), (None, 1));
     }
 
     #[test]
-    fn reticle_level_two_has_full_aim_guide() {
-        let (distance, bounces) = aim_trace_config(2, 0);
+    fn bank_sight_changes_bounces_without_changing_distance() {
+        let base = 240.0;
 
-        assert_eq!(distance, None);
-        assert_eq!(bounces, FULL_TRACE_BOUNCES);
+        assert_eq!(aim_trace_config(base, 1, 0), (Some(360.0), 1));
+        assert_eq!(aim_trace_config(base, 1, 1), (Some(360.0), 2));
+        assert_eq!(aim_trace_config(base, 1, 2), (Some(360.0), 3));
+        assert_eq!(
+            aim_trace_config(base, 1, 3),
+            (Some(360.0), FULL_TRACE_BOUNCES)
+        );
+    }
+
+    #[test]
+    fn initial_guide_geometry_tracks_canvas_and_mode_rows() {
+        let phone = BubbleLayout::for_canvas(390.0, 700.0);
+        let desktop = BubbleLayout::for_canvas(900.0, 760.0);
+        let normal = BubbleGame::new(7, 0);
+        let hard = BubbleGame::hard(7, 0);
+
+        for layout in [phone, desktop] {
+            let normal_distance = layout.initial_block_corner_distance(normal.initial_rows());
+            let hard_distance = layout.initial_block_corner_distance(hard.initial_rows());
+            assert!(normal_distance.is_finite() && normal_distance > 0.0);
+            assert!(hard_distance < normal_distance);
+        }
+    }
+
+    #[test]
+    fn two_hold_hitboxes_are_separate_from_each_other_and_the_cannon() {
+        for layout in [
+            BubbleLayout::for_canvas(320.0, 620.0),
+            BubbleLayout::for_canvas(900.0, 760.0),
+        ] {
+            let controls = cannon_controls(layout);
+            let hit_radius = hold_hit_radius(controls);
+            let first = hold_slot_x(controls, 0);
+            let second = hold_slot_x(controls, 1);
+
+            assert!(distance(first, controls.hold_y, second, controls.hold_y) > hit_radius * 2.0);
+            assert!(
+                distance(first, controls.hold_y, layout.cannon_x, layout.cannon_y) > hit_radius
+            );
+            assert_eq!(hold_slot_at(controls, 2, first, controls.hold_y), Some(0));
+            assert_eq!(hold_slot_at(controls, 2, second, controls.hold_y), Some(1));
+        }
     }
 
     #[test]
@@ -4188,7 +4309,7 @@ mod tests {
         let original = BubbleGame::new(11, 0).save_state();
 
         let mut current_game = BubbleGame::new(22, 0);
-        current_game.hold();
+        current_game.hold(0);
         let current = current_game.save_state();
 
         let other = BubbleGame::new(33, 0).save_state();

@@ -12,13 +12,15 @@ mod tests {
     use std::sync::Arc;
 
     use super::data::{Definition, WordHuntData};
-    use super::state::{BoardShape, Coord, GuessResult, Puzzle, SavedProgress, WordHuntState};
+    use super::state::{
+        BoardShape, Coord, GuessResult, Puzzle, SavedProgress, WordHuntDifficulty, WordHuntState,
+    };
 
     fn test_data() -> Arc<WordHuntData> {
         let mut definitions = HashMap::new();
         for word in [
-            "able", "baker", "cable", "cared", "deal", "dear", "read", "reads", "seal", "seed",
-            "tread",
+            "able", "baker", "cable", "cared", "deal", "dear", "read", "reads", "sea", "seal",
+            "seed", "tread",
         ] {
             definitions.insert(
                 word.to_string(),
@@ -134,10 +136,10 @@ mod tests {
     fn solver_discovers_accidental_words_and_filters_short_words() {
         let data = test_data();
         let rows = vec![
-            "RABLE".to_string(),
-            "XEXXX".to_string(),
-            "XXAXX".to_string(),
-            "XXXDX".to_string(),
+            "CABLE".to_string(),
+            "READS".to_string(),
+            "XXXXX".to_string(),
+            "XXXXX".to_string(),
             "XXXXX".to_string(),
         ];
         let puzzle = WordHuntState::puzzle_from_rows(Arc::clone(&data), rows).unwrap();
@@ -147,10 +149,11 @@ mod tests {
             .map(|word| word.word.as_str())
             .collect::<Vec<_>>();
 
-        assert!(words.contains(&"able"));
-        assert!(words.contains(&"read"));
+        assert!(words.contains(&"cable"));
+        assert!(words.contains(&"reads"));
+        assert!(!words.contains(&"able"));
         assert!(!words.contains(&"dear"));
-        assert!(words.iter().all(|word| word.len() >= 4));
+        assert!(words.iter().all(|word| word.len() >= 5));
     }
 
     #[test]
@@ -199,7 +202,7 @@ mod tests {
     fn word_must_be_selected_in_dictionary_order() {
         let data = test_data();
         let rows = vec![
-            "ELBAX".to_string(),
+            "REKAB".to_string(),
             "XXXXX".to_string(),
             "XXXXX".to_string(),
             "XXXXX".to_string(),
@@ -211,29 +214,29 @@ mod tests {
         );
 
         state.begin_selection(Coord::new(0, 0));
-        state.preview_selection(Coord::new(0, 3));
+        state.preview_selection(Coord::new(0, 4));
         assert!(matches!(
             state.submit_selection(),
-            GuessResult::NotInPuzzle { word } if word == "elba"
+            GuessResult::NotInPuzzle { word } if word == "rekab"
         ));
-        assert!(!state.is_found("able"));
+        assert!(!state.is_found("baker"));
 
-        state.begin_selection(Coord::new(0, 3));
+        state.begin_selection(Coord::new(0, 4));
         state.preview_selection(Coord::new(0, 0));
 
         assert!(matches!(
             state.submit_selection(),
-            GuessResult::Accepted { word, .. } if word == "able"
+            GuessResult::Accepted { word, .. } if word == "baker"
         ));
-        assert!(state.is_found("able"));
+        assert!(state.is_found("baker"));
     }
 
     #[test]
     fn resume_candidate_requires_found_words_and_an_unfinished_board() {
         let data = test_data();
         let rows = vec![
-            "ABLEX".to_string(),
-            "READX".to_string(),
+            "BAKER".to_string(),
+            "CABLE".to_string(),
             "XXXXX".to_string(),
             "XXXXX".to_string(),
             "XXXXX".to_string(),
@@ -246,10 +249,10 @@ mod tests {
         assert!(!state.is_resumable());
 
         state.begin_selection(Coord::new(0, 0));
-        state.preview_selection(Coord::new(0, 3));
+        state.preview_selection(Coord::new(0, 4));
         assert!(matches!(
             state.submit_selection(),
-            GuessResult::Accepted { word, .. } if word == "able"
+            GuessResult::Accepted { word, .. } if word == "baker"
         ));
 
         assert!(state.is_resumable());
@@ -264,7 +267,38 @@ mod tests {
 
         assert_eq!(first.board, second.board);
         assert_eq!(first.words, second.words);
-        assert!(first.words.iter().all(|word| word.word.len() >= 4));
+        assert!(first.words.iter().all(|word| word.word.len() >= 5));
+    }
+
+    #[test]
+    fn standard_density_targets_about_half_as_many_words_as_hard() {
+        for shape in [
+            BoardShape::square(8),
+            BoardShape::new(13, 9),
+            BoardShape::square(16),
+        ] {
+            let standard = WordHuntDifficulty::Standard.target_word_count(shape);
+            let hard = WordHuntDifficulty::Hard.target_word_count(shape);
+
+            assert!(standard < hard);
+            assert!(standard * 2 <= hard + 1);
+        }
+    }
+
+    #[test]
+    fn saved_progress_records_the_board_difficulty() {
+        let shape = BoardShape::square(8);
+        let standard = WordHuntState::fresh(test_data(), shape, 7, WordHuntDifficulty::Standard);
+        let hard = WordHuntState::fresh(test_data(), shape, 8, WordHuntDifficulty::Hard);
+
+        assert_eq!(
+            SavedProgress::from(&standard).difficulty,
+            WordHuntDifficulty::Standard
+        );
+        assert_eq!(
+            SavedProgress::from(&hard).difficulty,
+            WordHuntDifficulty::Hard
+        );
     }
 
     #[test]
@@ -335,7 +369,7 @@ mod tests {
     fn failed_submission_clears_selection_for_next_attempt() {
         let data = test_data();
         let rows = vec![
-            "ABLEX".to_string(),
+            "BAKER".to_string(),
             "XXXXX".to_string(),
             "XXXXX".to_string(),
             "XXXXX".to_string(),
@@ -347,19 +381,69 @@ mod tests {
         );
 
         state.begin_selection(Coord::new(1, 0));
-        state.preview_selection(Coord::new(1, 2));
+        state.preview_selection(Coord::new(1, 1));
         assert!(matches!(
             state.submit_selection(),
-            GuessResult::TooShort { word } if word == "xxx"
+            GuessResult::TooShort { word } if word == "xx"
         ));
         assert!(state.selection().is_none());
 
         state.begin_selection(Coord::new(0, 0));
-        state.preview_selection(Coord::new(0, 3));
+        state.preview_selection(Coord::new(0, 4));
         assert!(matches!(
             state.submit_selection(),
-            GuessResult::Accepted { word, .. } if word == "able"
+            GuessResult::Accepted { word, .. } if word == "baker"
         ));
+    }
+
+    #[test]
+    fn valid_four_letter_words_are_bonus_words_not_main_answers() {
+        let data = test_data();
+        let rows = vec![
+            "SEAXX".to_string(),
+            "ABLEX".to_string(),
+            "CABLE".to_string(),
+            "XXXXX".to_string(),
+            "XXXXX".to_string(),
+        ];
+        let mut state = WordHuntState::with_puzzle(
+            Arc::clone(&data),
+            WordHuntState::puzzle_from_rows(Arc::clone(&data), rows).unwrap(),
+        );
+
+        assert_eq!(state.total_count(), 1);
+        assert!(state
+            .puzzle()
+            .words
+            .iter()
+            .all(|entry| entry.word.len() >= 5));
+
+        state.begin_selection(Coord::new(0, 0));
+        state.preview_selection(Coord::new(0, 2));
+        assert!(matches!(
+            state.submit_selection(),
+            GuessResult::TooShort { word } if word == "sea"
+        ));
+
+        state.begin_selection(Coord::new(1, 0));
+        state.preview_selection(Coord::new(1, 3));
+        assert!(matches!(
+            state.submit_selection(),
+            GuessResult::Bonus { word, .. } if word == "able"
+        ));
+
+        assert_eq!(state.found_count(), 0);
+        assert_eq!(state.subword_count(), 0);
+        assert_eq!(state.bonus_count(), 1);
+        assert_eq!(state.bonus_words(), vec!["able".to_string()]);
+
+        state.begin_selection(Coord::new(1, 0));
+        state.preview_selection(Coord::new(1, 3));
+        assert!(matches!(
+            state.submit_selection(),
+            GuessResult::AlreadyBonus { word, .. } if word == "able"
+        ));
+        assert_eq!(state.bonus_count(), 1);
     }
 
     #[test]
@@ -476,13 +560,13 @@ mod tests {
 
     #[test]
     fn embedded_word_that_is_also_an_answer_does_not_become_duplicate_subword() {
-        let data = data_for_words(&["abcde", "dcba"]);
+        let data = data_for_words(&["abcdef", "edcba"]);
         let rows = vec![
-            "ABCDE".to_string(),
-            "DCBAX".to_string(),
-            "XXXXX".to_string(),
-            "XXXXX".to_string(),
-            "XXXXX".to_string(),
+            "ABCDEF".to_string(),
+            "EDCBAX".to_string(),
+            "XXXXXX".to_string(),
+            "XXXXXX".to_string(),
+            "XXXXXX".to_string(),
         ];
         let mut state = WordHuntState::with_puzzle(
             Arc::clone(&data),
@@ -493,14 +577,14 @@ mod tests {
             .puzzle()
             .words
             .iter()
-            .any(|entry| entry.word == "dcba"));
+            .any(|entry| entry.word == "edcba"));
 
-        state.begin_selection(Coord::new(0, 3));
+        state.begin_selection(Coord::new(0, 4));
         state.preview_selection(Coord::new(0, 0));
 
         assert!(matches!(
             state.submit_selection(),
-            GuessResult::NotInPuzzle { word } if word == "dcba"
+            GuessResult::NotInPuzzle { word } if word == "edcba"
         ));
         assert_eq!(state.subword_count(), 0);
         assert!(state.subwords().is_empty());

@@ -1502,6 +1502,11 @@ button.bubbles-ability-bubble {
   background: rgba(156, 199, 255, 0.08);
 }
 
+.wordhunt-word-entry.bonus {
+  border-color: rgba(105, 209, 125, 0.42);
+  background: rgba(105, 209, 125, 0.08);
+}
+
 .wordhunt-word-entry.selected {
   border-color: rgba(156, 199, 255, 0.78);
   background: rgba(156, 199, 255, 0.1);

@@ -16,7 +16,7 @@ pub const COLORS: [BubbleColor; 6] = [
 ];
 const SHOTS_PER_DROP: u32 = 5;
 const HARD_SHOTS_PER_DROP: u32 = 4;
-const BUBBLES_SAVE_VERSION: u8 = 2;
+const BUBBLES_SAVE_VERSION: u8 = 3;
 const BOMB_BLAST_RADIUS: usize = 2;
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -40,6 +40,7 @@ pub(crate) enum ShopUpgrade {
     QueueSight,
     TraceSight,
     Reticle,
+    HoldSlot,
     LandingDot,
     PrizeBubbles,
     PrizeQuality,
@@ -60,8 +61,12 @@ impl ShopUpgrade {
             | Self::DrillShot
             | Self::DropReset
             | Self::Revival => None,
-            Self::WildCache | Self::Reticle => Some(2),
-            Self::BlastRadius | Self::PopDrop | Self::TraceSight | Self::LandingDot => Some(1),
+            Self::WildCache => Some(2),
+            Self::BlastRadius
+            | Self::PopDrop
+            | Self::TraceSight
+            | Self::HoldSlot
+            | Self::LandingDot => Some(1),
             Self::CleanStart | Self::ExtraRows => Some(ROW_UPGRADE_LEVELS),
             _ => Some(3),
         }
@@ -772,6 +777,8 @@ pub struct BubbleRun {
     #[serde(default)]
     pub reticle_level: u8,
     #[serde(default)]
+    pub hold_slot_level: u8,
+    #[serde(default)]
     pub landing_dot_level: u8,
     #[serde(default)]
     pub wild_orb_active_level: u8,
@@ -905,6 +912,7 @@ impl Default for BubbleRun {
             lightning_power_level: 0,
             drill_power_level: 0,
             reticle_level: 0,
+            hold_slot_level: 0,
             landing_dot_level: 0,
             wild_orb_active_level: 0,
             bomb_drop_active_level: 0,
@@ -986,7 +994,8 @@ impl BubbleRun {
         self.pop_drop_level = self.pop_drop_level.min(1);
         self.lightning_power_level = self.lightning_power_level.min(3);
         self.drill_power_level = self.drill_power_level.min(3);
-        self.reticle_level = self.reticle_level.min(2);
+        self.reticle_level = self.reticle_level.min(3);
+        self.hold_slot_level = self.hold_slot_level.min(1);
         self.landing_dot_level = self.landing_dot_level.min(1);
         if self.wild_orb_level == 0 {
             self.wild_orb_enabled = false;
@@ -1295,6 +1304,10 @@ impl BubbleRun {
         )
     }
 
+    pub(crate) fn active_hold_slot_level(&self) -> u8 {
+        self.hold_slot_level
+    }
+
     pub(crate) fn active_landing_dot_level(&self) -> u8 {
         active_level(
             self.landing_dot_enabled,
@@ -1363,11 +1376,12 @@ impl BubbleRun {
             .clamp(3, ROWS.saturating_sub(2))
     }
 
-    fn scout_kit_complete(&self) -> bool {
+    pub(crate) fn scout_kit_complete(&self) -> bool {
         self.active_queue_sight_level() > 0
             && self.active_bank_sight_level() > 0
             && self.active_trace_sight_level() > 0
             && self.active_reticle_level() > 0
+            && self.active_hold_slot_level() > 0
             && self.active_landing_dot_level() > 0
     }
 
@@ -1455,7 +1469,7 @@ pub struct BubbleGame {
     pub high_score: u64,
     pub shots_until_drop: u32,
     pub game_over: bool,
-    pub held: Option<BubbleColor>,
+    pub held: [Option<BubbleColor>; 2],
     pub(crate) run: BubbleRun,
     rng: Lcg,
     queue: VecDeque<BubbleColor>,
@@ -1470,7 +1484,7 @@ pub struct SavedBubbleGame {
     score: u64,
     shots_until_drop: u32,
     game_over: bool,
-    held: Option<BubbleColor>,
+    held: [Option<BubbleColor>; 2],
     run: BubbleRun,
     rng_state: u64,
     queue: Vec<BubbleColor>,
@@ -1508,7 +1522,7 @@ impl BubbleGame {
             high_score,
             shots_until_drop: rules.shots_per_drop(&run),
             game_over: false,
-            held: None,
+            held: [None; 2],
             run,
             rng,
             queue,
@@ -1553,6 +1567,9 @@ impl BubbleGame {
 
         let rules = GameRules::for_mode(hard);
         let run = save.run.normalized();
+        if run.active_hold_slot_level() == 0 && save.held[1].is_some() {
+            return None;
+        }
         if save.shots_until_drop == 0 || save.shots_until_drop > rules.shots_per_drop(&run) {
             return None;
         }
@@ -1582,20 +1599,29 @@ impl BubbleGame {
     }
 
     /// Stash the current bubble for later, or swap it back with a held one.
-    pub fn hold(&mut self) {
-        if self.game_over {
+    pub fn hold(&mut self, slot: usize) {
+        if self.game_over || slot >= self.available_hold_slots() {
             return;
         }
-        match self.held {
+        match self.held[slot] {
             Some(held) => {
-                self.held = Some(self.queue[0]);
+                self.held[slot] = Some(self.queue[0]);
                 self.queue[0] = held;
             }
             None => {
-                self.held = self.queue.pop_front();
+                self.held[slot] = self.queue.pop_front();
                 self.refill_queue();
             }
         }
+    }
+
+    pub(crate) fn available_hold_slots(&self) -> usize {
+        1 + usize::from(self.run.active_hold_slot_level() > 0)
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) fn initial_rows(&self) -> usize {
+        self.run.starting_rows(self.rules.starting_rows())
     }
 
     /// Pop the fired bubble off the queue and refill so `current_color` and
@@ -1883,6 +1909,7 @@ impl BubbleGame {
                 &mut self.run.reticle_active_level,
                 self.run.reticle_level,
             ) as u32,
+            ShopUpgrade::HoldSlot => self.run.hold_slot_level as u32,
             ShopUpgrade::LandingDot => cycle_active_upgrade_level(
                 &mut self.run.landing_dot_enabled,
                 &mut self.run.landing_dot_active_level,
@@ -1938,6 +1965,7 @@ impl BubbleGame {
             ShopUpgrade::QueueSight => self.run.queue_sight_level,
             ShopUpgrade::TraceSight => self.run.trace_sight_level,
             ShopUpgrade::Reticle => self.run.reticle_level,
+            ShopUpgrade::HoldSlot => self.run.hold_slot_level,
             ShopUpgrade::LandingDot => self.run.landing_dot_level,
             ShopUpgrade::PrizeBubbles => self.run.prize_bubble_level,
             ShopUpgrade::PrizeQuality => self.run.prize_quality_level,
@@ -2055,10 +2083,14 @@ impl BubbleGame {
                 self.run.trace_sight_level as u32
             }
             ShopUpgrade::Reticle => {
-                self.run.reticle_level = self.run.reticle_level.saturating_add(1).min(2);
+                self.run.reticle_level = self.run.reticle_level.saturating_add(1).min(3);
                 self.run.reticle_enabled = true;
                 self.run.reticle_active_level = self.run.reticle_level;
                 self.run.reticle_level as u32
+            }
+            ShopUpgrade::HoldSlot => {
+                self.run.hold_slot_level = self.run.hold_slot_level.saturating_add(1).min(1);
+                self.run.hold_slot_level as u32
             }
             ShopUpgrade::LandingDot => {
                 self.run.landing_dot_level = self.run.landing_dot_level.saturating_add(1).min(1);
@@ -3013,7 +3045,7 @@ mod tests {
             BubbleColor::Sky,
             BubbleColor::Mint,
         ]);
-        game.held = Some(BubbleColor::Rose);
+        game.held[0] = Some(BubbleColor::Rose);
         game.board
             .set(CellCoord::new(0, 0), Some(BubbleColor::Rose));
         game.board
@@ -3025,7 +3057,7 @@ mod tests {
 
         assert_eq!(resolution.popped.len(), 3);
         assert_eq!(game.current_color(), BubbleColor::Coral);
-        assert_eq!(game.held, Some(BubbleColor::Rose));
+        assert_eq!(game.held[0], Some(BubbleColor::Rose));
     }
 
     #[test]
@@ -3092,13 +3124,69 @@ mod tests {
         let mut game = BubbleGame::new(7, 0);
         let first = game.current_color();
 
-        game.hold();
-        assert_eq!(game.held, Some(first));
+        game.hold(0);
+        assert_eq!(game.held[0], Some(first));
         let second = game.current_color();
 
-        game.hold();
+        game.hold(0);
         assert_eq!(game.current_color(), first);
-        assert_eq!(game.held, Some(second));
+        assert_eq!(game.held[0], Some(second));
+    }
+
+    #[test]
+    fn second_hold_slot_is_locked_until_purchased() {
+        let mut game = BubbleGame::new(7, 0);
+        let current = game.current_color();
+
+        game.hold(1);
+
+        assert_eq!(game.current_color(), current);
+        assert_eq!(game.held, [None; 2]);
+    }
+
+    #[test]
+    fn purchased_hold_slots_swap_independently() {
+        let run = BubbleRun {
+            hold_slot_level: 1,
+            ..BubbleRun::default()
+        };
+        let mut game = BubbleGame::with_run(7, 0, false, run);
+        let first = game.current_color();
+        game.hold(0);
+        let second = game.current_color();
+        game.hold(1);
+        let third = game.current_color();
+
+        assert_eq!(game.held, [Some(first), Some(second)]);
+        game.hold(1);
+        assert_eq!(game.current_color(), second);
+        assert_eq!(game.held, [Some(first), Some(third)]);
+        game.hold(0);
+        assert_eq!(game.current_color(), first);
+        assert_eq!(game.held, [Some(second), Some(third)]);
+    }
+
+    #[test]
+    fn hold_slot_upgrade_is_single_level_and_persistent() {
+        let mut game = BubbleGame::new(7, 0);
+        game.run.banked_score = 2_000;
+
+        assert_eq!(game.purchase_upgrade(ShopUpgrade::HoldSlot, 1_000), Some(1));
+        assert_eq!(game.available_hold_slots(), 2);
+        assert_eq!(game.purchase_upgrade(ShopUpgrade::HoldSlot, 1_000), None);
+
+        game.hold(1);
+        let restored = BubbleGame::from_save(game.save_state(), 0, false).unwrap();
+        assert_eq!(restored.available_hold_slots(), 2);
+        assert_eq!(restored.held, game.held);
+    }
+
+    #[test]
+    fn save_rejects_an_occupied_locked_hold_slot() {
+        let mut save = BubbleGame::new(7, 0).save_state();
+        save.held[1] = Some(BubbleColor::Rose);
+
+        assert!(BubbleGame::from_save(save, 0, false).is_none());
     }
 
     #[test]
@@ -3184,6 +3272,7 @@ mod tests {
             drill_power_enabled: true,
             reticle_level: 1,
             reticle_enabled: true,
+            hold_slot_level: 1,
             landing_dot_level: 1,
             landing_dot_enabled: true,
             ..BubbleRun::default()
@@ -3357,6 +3446,7 @@ mod tests {
             trace_sight_enabled: true,
             reticle_level: 1,
             reticle_enabled: true,
+            hold_slot_level: 1,
             landing_dot_level: 1,
             landing_dot_enabled: true,
             ..BubbleRun::default()
@@ -3385,6 +3475,7 @@ mod tests {
             reticle_level: 1,
             reticle_active_level: 1,
             reticle_enabled: true,
+            hold_slot_level: 1,
             landing_dot_level: 1,
             landing_dot_active_level: 1,
             landing_dot_enabled: true,
@@ -3617,10 +3708,35 @@ mod tests {
     }
 
     #[test]
+    fn level_one_bombs_can_spawn_in_dropped_rows() {
+        let mut found_bomb = false;
+
+        for seed in 1..500 {
+            let run = BubbleRun {
+                bomb_drop_level: 1,
+                bomb_drop_enabled: true,
+                ..BubbleRun::default()
+            };
+            let mut game = BubbleGame::with_run(seed, 0, false, run);
+            game.shots_until_drop = 1;
+            game.advance_ceiling();
+
+            if (0..COLS)
+                .any(|col| game.board.get(CellCoord::new(0, col)) == Some(BubbleColor::Bomb))
+            {
+                found_bomb = true;
+                break;
+            }
+        }
+
+        assert!(found_bomb);
+    }
+
+    #[test]
     fn saved_active_game_round_trips_without_restoring_saved_high_score() {
         let mut game = BubbleGame::new(7, 900);
         game.score = 120;
-        game.hold();
+        game.hold(0);
 
         let json = serde_json::to_string(&game.save_state()).unwrap();
         let save = serde_json::from_str::<SavedBubbleGame>(&json).unwrap();
@@ -3714,6 +3830,7 @@ mod tests {
             trace_sight_enabled: true,
             reticle_level: 1,
             reticle_enabled: true,
+            hold_slot_level: 1,
             landing_dot_level: 1,
             landing_dot_enabled: true,
             ..BubbleRun::default()

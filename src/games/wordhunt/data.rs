@@ -38,7 +38,7 @@ impl WordHuntData {
         let mut words = words
             .into_iter()
             .filter_map(|word| clean_word(&word))
-            .filter(|word| word.len() >= 4)
+            .filter(|word| word.len() >= 3)
             .collect::<Vec<_>>();
         words.sort();
         words.dedup();

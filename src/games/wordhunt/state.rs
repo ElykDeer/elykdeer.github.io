@@ -17,14 +17,30 @@ const DIRECTIONS: [(isize, isize); 8] = [
     (1, 1),
 ];
 const DIAGONAL_DIRECTIONS: [(isize, isize); 4] = [(-1, -1), (-1, 1), (1, -1), (1, 1)];
-const MIN_WORD_LEN: usize = 4;
+const MIN_BONUS_WORD_LEN: usize = 4;
+const MIN_MAIN_WORD_LEN: usize = 5;
 const LONG_WORD_LEN: usize = 7;
 const MIN_BOARD_SIDE: usize = 5;
 const MAX_SEED_WORD_LEN: usize = 32;
 const MAX_GENERATION_ROUNDS: usize = 30;
 const WORD_PLACEMENT_TRIES: usize = 120;
 const SHORT_SEED_LENGTH_WEIGHTS: [(usize, usize); 5] = [(4, 0), (5, 6), (6, 8), (7, 4), (8, 2)];
-const WORDHUNT_SAVE_VERSION: u8 = 1;
+const WORDHUNT_SAVE_VERSION: u8 = 3;
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub(super) enum WordHuntDifficulty {
+    Standard,
+    Hard,
+}
+
+impl WordHuntDifficulty {
+    pub(super) fn target_word_count(self, shape: BoardShape) -> usize {
+        match self {
+            Self::Standard => (shape.area() / 6).clamp(10, 28),
+            Self::Hard => target_word_count(shape),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct BoardShape {
@@ -105,6 +121,7 @@ impl Puzzle {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub(super) struct SavedProgress {
     pub(super) version: u8,
+    pub(super) difficulty: WordHuntDifficulty,
     pub(super) puzzle: Option<Puzzle>,
     #[serde(default)]
     pub(super) found: BTreeMap<String, Vec<Coord>>,
@@ -112,16 +129,20 @@ pub(super) struct SavedProgress {
     pub(super) revealed: BTreeMap<String, Vec<Coord>>,
     #[serde(default)]
     pub(super) subwords: BTreeMap<String, Vec<Coord>>,
+    #[serde(default)]
+    pub(super) bonus_words: BTreeMap<String, Vec<Coord>>,
 }
 
 impl Default for SavedProgress {
     fn default() -> Self {
         Self {
             version: WORDHUNT_SAVE_VERSION,
+            difficulty: WordHuntDifficulty::Standard,
             puzzle: None,
             found: BTreeMap::new(),
             revealed: BTreeMap::new(),
             subwords: BTreeMap::new(),
+            bonus_words: BTreeMap::new(),
         }
     }
 }
@@ -153,6 +174,14 @@ pub(super) enum GuessResult {
         word: String,
         path: Vec<Coord>,
     },
+    Bonus {
+        word: String,
+        path: Vec<Coord>,
+    },
+    AlreadyBonus {
+        word: String,
+        path: Vec<Coord>,
+    },
     Empty,
     TooShort {
         word: String,
@@ -176,26 +205,36 @@ pub(super) struct WordHuntState {
     found: BTreeMap<String, Vec<Coord>>,
     revealed: BTreeMap<String, Vec<Coord>>,
     subwords: BTreeMap<String, Vec<Coord>>,
+    bonus_words: BTreeMap<String, Vec<Coord>>,
     selection: Option<Selection>,
+    difficulty: WordHuntDifficulty,
 }
 
 impl SavedProgress {
-    fn load(data: Arc<WordHuntData>, shape: BoardShape, seed: u64) -> Self {
-        Self::load_existing(&data).unwrap_or_else(|| SavedProgress {
+    fn load(
+        data: Arc<WordHuntData>,
+        shape: BoardShape,
+        seed: u64,
+        difficulty: WordHuntDifficulty,
+    ) -> Self {
+        Self::load_existing(&data, difficulty).unwrap_or_else(|| SavedProgress {
+            difficulty,
             puzzle: Some(WordHuntState::generate_puzzle(
                 data,
                 shape,
-                target_word_count(shape),
+                difficulty.target_word_count(shape),
                 seed,
             )),
             ..SavedProgress::default()
         })
     }
 
-    fn load_existing(data: &WordHuntData) -> Option<Self> {
+    fn load_existing(data: &WordHuntData, difficulty: WordHuntDifficulty) -> Option<Self> {
         load_saved_progress()
             .and_then(|json| serde_json::from_str::<SavedProgress>(&json).ok())
-            .filter(|progress| progress.version == WORDHUNT_SAVE_VERSION)
+            .filter(|progress| {
+                progress.version == WORDHUNT_SAVE_VERSION && progress.difficulty == difficulty
+            })
             .and_then(|progress| progress.validated(data))
     }
 
@@ -214,6 +253,8 @@ impl SavedProgress {
             .retain(|word, path| words.contains(word) && path_belongs_to_word(&puzzle, word, path));
         self.subwords
             .retain(|word, path| subword_belongs_to_puzzle(data, &puzzle, word, path));
+        self.bonus_words
+            .retain(|word, path| bonus_belongs_to_puzzle(data, &puzzle, word, path));
         self.puzzle = Some(puzzle);
         Some(self)
     }
@@ -223,18 +264,25 @@ impl From<&WordHuntState> for SavedProgress {
     fn from(state: &WordHuntState) -> Self {
         Self {
             version: WORDHUNT_SAVE_VERSION,
+            difficulty: state.difficulty,
             puzzle: Some(state.puzzle.clone()),
             found: state.found.clone(),
             revealed: state.revealed.clone(),
             subwords: state.subwords.clone(),
+            bonus_words: state.bonus_words.clone(),
         }
     }
 }
 
 impl WordHuntState {
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    pub(super) fn new(data: Arc<WordHuntData>, shape: BoardShape, seed: u64) -> Self {
-        let progress = SavedProgress::load(Arc::clone(&data), shape, seed);
+    pub(super) fn new(
+        data: Arc<WordHuntData>,
+        shape: BoardShape,
+        seed: u64,
+        difficulty: WordHuntDifficulty,
+    ) -> Self {
+        let progress = SavedProgress::load(Arc::clone(&data), shape, seed, difficulty);
         Self {
             data,
             puzzle: progress
@@ -243,13 +291,15 @@ impl WordHuntState {
             found: progress.found,
             revealed: progress.revealed,
             subwords: progress.subwords,
+            bonus_words: progress.bonus_words,
             selection: None,
+            difficulty,
         }
     }
 
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    pub(super) fn saved(data: Arc<WordHuntData>) -> Option<Self> {
-        let progress = SavedProgress::load_existing(&data)?;
+    pub(super) fn saved(data: Arc<WordHuntData>, difficulty: WordHuntDifficulty) -> Option<Self> {
+        let progress = SavedProgress::load_existing(&data, difficulty)?;
         Some(Self {
             data,
             puzzle: progress
@@ -258,21 +308,34 @@ impl WordHuntState {
             found: progress.found,
             revealed: progress.revealed,
             subwords: progress.subwords,
+            bonus_words: progress.bonus_words,
             selection: None,
+            difficulty,
         })
     }
 
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    pub(super) fn fresh(data: Arc<WordHuntData>, shape: BoardShape, seed: u64) -> Self {
-        let puzzle =
-            Self::generate_puzzle(Arc::clone(&data), shape, target_word_count(shape), seed);
+    pub(super) fn fresh(
+        data: Arc<WordHuntData>,
+        shape: BoardShape,
+        seed: u64,
+        difficulty: WordHuntDifficulty,
+    ) -> Self {
+        let puzzle = Self::generate_puzzle(
+            Arc::clone(&data),
+            shape,
+            difficulty.target_word_count(shape),
+            seed,
+        );
         Self {
             data,
             puzzle,
             found: BTreeMap::new(),
             revealed: BTreeMap::new(),
             subwords: BTreeMap::new(),
+            bonus_words: BTreeMap::new(),
             selection: None,
+            difficulty,
         }
     }
 
@@ -284,7 +347,9 @@ impl WordHuntState {
             found: BTreeMap::new(),
             revealed: BTreeMap::new(),
             subwords: BTreeMap::new(),
+            bonus_words: BTreeMap::new(),
             selection: None,
+            difficulty: WordHuntDifficulty::Hard,
         }
     }
 
@@ -503,6 +568,10 @@ impl WordHuntState {
             .count()
     }
 
+    pub(super) fn bonus_count(&self) -> usize {
+        self.bonus_words.len()
+    }
+
     pub(super) fn revealed_count(&self) -> usize {
         self.revealed
             .keys()
@@ -524,7 +593,7 @@ impl WordHuntState {
     }
 
     pub(super) fn restore_saved(&mut self) -> bool {
-        let Some(saved) = Self::saved(Arc::clone(&self.data)) else {
+        let Some(saved) = Self::saved(Arc::clone(&self.data), self.difficulty) else {
             return false;
         };
         *self = saved;
@@ -535,12 +604,13 @@ impl WordHuntState {
         self.puzzle = Self::generate_puzzle(
             Arc::clone(&self.data),
             shape,
-            target_word_count(shape.normalized()),
+            self.difficulty.target_word_count(shape.normalized()),
             seed,
         );
         self.found.clear();
         self.revealed.clear();
         self.subwords.clear();
+        self.bonus_words.clear();
         self.selection = None;
     }
 
@@ -599,6 +669,19 @@ impl WordHuntState {
             .filter(|word| !self.puzzle_has_word(word))
             .cloned()
             .collect()
+    }
+
+    pub(super) fn bonus_words(&self) -> Vec<String> {
+        self.bonus_words.keys().cloned().collect()
+    }
+
+    pub(super) fn path_for_word(&self, word: &str) -> Option<Vec<Coord>> {
+        self.found
+            .get(word)
+            .or_else(|| self.revealed.get(word))
+            .or_else(|| self.subwords.get(word))
+            .or_else(|| self.bonus_words.get(word))
+            .cloned()
     }
 
     pub(super) fn definitions_for(&self, word: &str) -> Vec<Definition> {
@@ -674,7 +757,7 @@ impl WordHuntState {
             return GuessResult::Empty;
         };
         let selected = self.word_from_path(&selection.coords).to_ascii_lowercase();
-        if selection.coords.len() < MIN_WORD_LEN {
+        if selection.coords.len() < MIN_BONUS_WORD_LEN {
             self.selection = None;
             return GuessResult::TooShort { word: selected };
         }
@@ -687,6 +770,13 @@ impl WordHuntState {
                 }
                 self.subwords.insert(word.clone(), path.clone());
                 return GuessResult::Subword { word, path };
+            }
+            if let Some((word, path)) = self.bonus_for_path(&selection.coords, &selected) {
+                if self.bonus_words.contains_key(&word) {
+                    return GuessResult::AlreadyBonus { word, path };
+                }
+                self.bonus_words.insert(word.clone(), path.clone());
+                return GuessResult::Bonus { word, path };
             }
             return GuessResult::NotInPuzzle { word: selected };
         };
@@ -780,10 +870,10 @@ impl WordHuntState {
     }
 
     fn subword_for_path(&self, path: &[Coord], selected: &str) -> Option<(String, Vec<Coord>)> {
-        if selected.len() < MIN_WORD_LEN
-            || !self.data.is_word(selected)
-            || self.puzzle_has_word(selected)
-        {
+        if selected.len() < MIN_BONUS_WORD_LEN || !self.data.is_word(selected) {
+            return None;
+        }
+        if self.puzzle_has_word(selected) {
             return None;
         }
         self.puzzle.words.iter().find_map(|entry| {
@@ -796,6 +886,14 @@ impl WordHuntState {
                 .any(|candidate| path_is_contiguous_subset(path, candidate))
                 .then(|| (selected.to_string(), path.to_vec()))
         })
+    }
+
+    fn bonus_for_path(&self, path: &[Coord], selected: &str) -> Option<(String, Vec<Coord>)> {
+        (selected.len() == MIN_BONUS_WORD_LEN
+            && self.data.is_word(selected)
+            && !self.puzzle_has_word(selected)
+            && self.word_from_path(path).eq_ignore_ascii_case(selected))
+        .then(|| (selected.to_string(), path.to_vec()))
     }
 }
 
@@ -831,7 +929,7 @@ fn solve_rows(data: &WordHuntData, rows: Vec<String>) -> Puzzle {
                     let coord = Coord::new(next_row as usize, next_col as usize);
                     word.push(board[coord.row][coord.col].to_ascii_lowercase());
                     path.push(coord);
-                    if word.len() >= MIN_WORD_LEN && data.is_word(&word) {
+                    if word.len() >= MIN_MAIN_WORD_LEN && data.is_word(&word) {
                         found.entry(word.clone()).or_default().push(path.clone());
                     }
                 }
@@ -923,11 +1021,30 @@ fn subword_belongs_to_puzzle(
     word: &str,
     path: &[Coord],
 ) -> bool {
-    word.len() >= MIN_WORD_LEN
+    word.len() >= MIN_BONUS_WORD_LEN
         && data.is_word(word)
         && !puzzle.words.iter().any(|entry| entry.word == word)
         && word_from_puzzle_path(puzzle, path).as_deref() == Some(word)
         && puzzle.words.iter().any(|entry| {
+            entry.word.len() > word.len()
+                && entry
+                    .paths
+                    .iter()
+                    .any(|candidate| path_is_contiguous_subset(path, candidate))
+        })
+}
+
+fn bonus_belongs_to_puzzle(
+    data: &WordHuntData,
+    puzzle: &Puzzle,
+    word: &str,
+    path: &[Coord],
+) -> bool {
+    word.len() == MIN_BONUS_WORD_LEN
+        && data.is_word(word)
+        && !puzzle.words.iter().any(|entry| entry.word == word)
+        && word_from_puzzle_path(puzzle, path).as_deref() == Some(word)
+        && !puzzle.words.iter().any(|entry| {
             entry.word.len() > word.len()
                 && entry
                     .paths
@@ -1009,7 +1126,7 @@ fn non_short_word_count(puzzle: &Puzzle) -> usize {
     puzzle
         .words
         .iter()
-        .filter(|entry| entry.word.len() > MIN_WORD_LEN)
+        .filter(|entry| entry.word.len() > MIN_MAIN_WORD_LEN)
         .count()
 }
 
@@ -1071,8 +1188,12 @@ fn seed_length_allocation(target: usize, max_len: usize, seed_words: &[&str]) ->
         .into_iter()
         .filter(|(len, weight)| *weight > 0 && seed_words.iter().any(|word| word.len() == *len))
         .collect::<Vec<_>>();
-    if available_lengths.is_empty() && seed_words.iter().any(|word| word.len() == MIN_WORD_LEN) {
-        available_lengths.push((MIN_WORD_LEN, 1));
+    if available_lengths.is_empty()
+        && seed_words
+            .iter()
+            .any(|word| word.len() == MIN_MAIN_WORD_LEN)
+    {
+        available_lengths.push((MIN_MAIN_WORD_LEN, 1));
     }
     if available_lengths.is_empty() {
         return Vec::new();
@@ -1118,7 +1239,7 @@ fn seed_length_allocation(target: usize, max_len: usize, seed_words: &[&str]) ->
 }
 
 fn seed_length_weights(max_len: usize) -> Vec<(usize, usize)> {
-    (MIN_WORD_LEN..=max_len)
+    (MIN_MAIN_WORD_LEN..=max_len)
         .map(|len| {
             let weight = SHORT_SEED_LENGTH_WEIGHTS
                 .iter()

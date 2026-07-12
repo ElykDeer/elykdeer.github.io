@@ -3,7 +3,7 @@ use crate::terminal::{GameLaunch, OutputBlock, TerminalContext};
 
 pub struct TextropolisCommand;
 
-const TEXTROPOLIS_VERSION: &str = "1.x";
+const TEXTROPOLIS_VERSION: &str = "1.0.0";
 
 impl Command for TextropolisCommand {
     fn name(&self) -> &'static str {

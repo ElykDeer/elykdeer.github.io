@@ -20,7 +20,7 @@ use super::data::Definition;
 use super::data::WordHuntData;
 #[cfg(target_arch = "wasm32")]
 use super::state::RevealResult;
-use super::state::{BoardShape, Coord, GuessResult, WordHuntState};
+use super::state::{BoardShape, Coord, GuessResult, WordHuntDifficulty, WordHuntState};
 use super::storage::save_progress;
 use crate::terminal::WordHuntLaunchBoard;
 
@@ -28,7 +28,7 @@ use crate::terminal::WordHuntLaunchBoard;
 #[derive(Clone, Debug)]
 enum DictionaryLoad {
     Loading,
-    Ready(WordHuntState),
+    Ready(Box<WordHuntState>),
     Failed(String),
 }
 
@@ -420,6 +420,28 @@ fn focus_terminal_command_input() {
 #[cfg(not(target_arch = "wasm32"))]
 fn focus_terminal_command_input() {}
 
+fn show_word_highlight(
+    highlighted_path: RwSignal<Option<Vec<Coord>>>,
+    path: Option<Vec<Coord>>,
+    temporary: bool,
+) {
+    highlighted_path.set(path.clone());
+    if temporary {
+        #[cfg(target_arch = "wasm32")]
+        if let (Some(window), Some(expected)) = (web_sys::window(), path) {
+            let callback = Closure::once_into_js(move || {
+                if highlighted_path.get_untracked().as_ref() == Some(&expected) {
+                    highlighted_path.set(None);
+                }
+            });
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                callback.unchecked_ref(),
+                1_200,
+            );
+        }
+    }
+}
+
 fn feedback_for_guess(result: &GuessResult) -> (String, FeedbackTone, Option<String>) {
     match result {
         GuessResult::Accepted { word, .. } => (
@@ -439,6 +461,16 @@ fn feedback_for_guess(result: &GuessResult) -> (String, FeedbackTone, Option<Str
         ),
         GuessResult::AlreadySubword { word, .. } => (
             format!("Already found subword: {}", word.to_ascii_uppercase()),
+            FeedbackTone::Warn,
+            None,
+        ),
+        GuessResult::Bonus { word, .. } => (
+            format!("Bonus found: {}", word.to_ascii_uppercase()),
+            FeedbackTone::Good,
+            None,
+        ),
+        GuessResult::AlreadyBonus { word, .. } => (
+            format!("Already found bonus: {}", word.to_ascii_uppercase()),
             FeedbackTone::Warn,
             None,
         ),
@@ -493,6 +525,13 @@ pub fn WordHuntGame(
     #[prop(optional)] board: Option<WordHuntLaunchBoard>,
 ) -> impl IntoView {
     let requested_board = board.map(launch_board_request);
+    let difficulty = if matches!(board, Some(WordHuntLaunchBoard::Max)) {
+        WordHuntDifficulty::Hard
+    } else {
+        WordHuntDifficulty::Standard
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = difficulty;
     let fixed_size = matches!(board, Some(WordHuntLaunchBoard::Shape { .. }));
     let section_ref = NodeRef::<Section>::new();
     let load = RwSignal::new(DictionaryLoad::Loading);
@@ -507,6 +546,7 @@ pub fn WordHuntGame(
     let dictionary_loading = RwSignal::new(false);
     let dictionary_pending_open = RwSignal::new(false);
     let selected_detail = RwSignal::new(None::<String>);
+    let highlighted_path = RwSignal::new(None::<Vec<Coord>>);
     let pointer_down = RwSignal::new(false);
     let pointer_moved = RwSignal::new(false);
     let game_active = RwSignal::new(false);
@@ -517,7 +557,7 @@ pub fn WordHuntGame(
         match load_wordhunt_data().await {
             Ok(data) => {
                 let can_resume = !reveal
-                    && WordHuntState::saved(Arc::clone(&data))
+                    && WordHuntState::saved(Arc::clone(&data), difficulty)
                         .as_ref()
                         .is_some_and(WordHuntState::is_resumable);
                 let shape = match viewport_board_shape(requested_board) {
@@ -528,9 +568,9 @@ pub fn WordHuntGame(
                     }
                 };
                 let mut state = if reveal {
-                    WordHuntState::new(data, shape, random_seed())
+                    WordHuntState::new(data, shape, random_seed(), difficulty)
                 } else {
-                    WordHuntState::fresh(data, shape, random_seed())
+                    WordHuntState::fresh(data, shape, random_seed(), difficulty)
                 };
                 if reveal {
                     match state.reveal_all() {
@@ -553,7 +593,7 @@ pub fn WordHuntGame(
                 if reveal || !can_resume {
                     save_progress(&state);
                 }
-                load.set(DictionaryLoad::Ready(state));
+                load.set(DictionaryLoad::Ready(Box::new(state)));
             }
             Err(err) => load.set(DictionaryLoad::Failed(err)),
         }
@@ -621,6 +661,7 @@ pub fn WordHuntGame(
 
     let continue_board = move || {
         selected_detail.set(None);
+        highlighted_path.set(None);
         word_dialog_open.set(false);
         win_dialog_open.set(false);
         pointer_down.set(false);
@@ -647,6 +688,7 @@ pub fn WordHuntGame(
 
     let resume_last_board = move || {
         selected_detail.set(None);
+        highlighted_path.set(None);
         word_dialog_open.set(false);
         win_dialog_open.set(false);
         pointer_down.set(false);
@@ -685,6 +727,9 @@ pub fn WordHuntGame(
             }
         });
         let (message, tone, detail) = feedback_for_guess(&result);
+        if let GuessResult::Bonus { path, .. } | GuessResult::AlreadyBonus { path, .. } = &result {
+            show_word_highlight(highlighted_path, Some(path.clone()), true);
+        }
         if let Some(word) = detail {
             selected_detail.set(Some(word));
         }
@@ -700,6 +745,7 @@ pub fn WordHuntGame(
 
     let begin_selection = move |coord: Coord| {
         selected_detail.set(None);
+        highlighted_path.set(None);
         focused_coord.set(coord);
         load.update(|load| {
             if let DictionaryLoad::Ready(state) = load {
@@ -796,6 +842,7 @@ pub fn WordHuntGame(
 
     let clear_selection = move || {
         selected_detail.set(None);
+        highlighted_path.set(None);
         load.update(|load| {
             if let DictionaryLoad::Ready(state) = load {
                 state.clear_selection();
@@ -913,6 +960,7 @@ pub fn WordHuntGame(
         if is_wordhunt_background_click(&ev) {
             ev.stop_propagation();
             game_active.set(false);
+            highlighted_path.set(None);
             focus_terminal_command_input();
         }
     };
@@ -949,6 +997,7 @@ pub fn WordHuntGame(
                     let total = state.total_count();
                     let revealed = state.revealed_count();
                     let subwords = state.subword_count();
+                    let bonuses = state.bonus_count();
                     let rows = state.puzzle().rows();
                     let cols = state.puzzle().cols();
                     view! {
@@ -968,6 +1017,15 @@ pub fn WordHuntGame(
                                         view! {
                                             <span class="wordhunt-subword-count">
                                                 {format!("+{subwords}")}
+                                            </span>
+                                        }.into_any()
+                                    }}
+                                    {if bonuses == 0 {
+                                        ().into_any()
+                                    } else {
+                                        view! {
+                                            <span class="wordhunt-bonus-count" style="color:#69d17d;">
+                                                {format!("★{bonuses}")}
                                             </span>
                                         }.into_any()
                                     }}
@@ -1023,6 +1081,7 @@ pub fn WordHuntGame(
 
                             <WordHuntBoard
                                 load=load
+                                highlighted_path=highlighted_path
                                 focused_coord=focused_coord
                                 game_active=game_active
                                 handle_pointer=handle_pointer
@@ -1041,6 +1100,7 @@ pub fn WordHuntGame(
                                     <WordHuntWordDialog
                                         load=load
                                         selected_detail=selected_detail
+                                        highlighted_path=highlighted_path
                                         close=move |_| word_dialog_open.set(false)
                                     />
                                 }.into_any()
@@ -1071,6 +1131,7 @@ pub fn WordHuntGame(
 #[component]
 fn WordHuntBoard(
     load: RwSignal<DictionaryLoad>,
+    highlighted_path: RwSignal<Option<Vec<Coord>>>,
     focused_coord: RwSignal<Coord>,
     game_active: RwSignal<bool>,
     handle_pointer: impl Fn(Coord, PointerPhase) + Copy + Send + Sync + 'static,
@@ -1089,6 +1150,7 @@ fn WordHuntBoard(
                     let found_paths = state.found_paths();
                     let revealed_paths = state.revealed_paths();
                     let subword_paths = state.subword_paths();
+                    let detail_path = highlighted_path.get();
                     let rows = state.puzzle().rows();
                     let cols = state.puzzle().cols();
                     view! {
@@ -1135,6 +1197,17 @@ fn WordHuntBoard(
                                     .map(|path| view! {
                                         <polyline
                                             class="wordhunt-path-mark wordhunt-path-mark-revealed"
+                                            style="stroke-width:0.70;"
+                                            points=path_points(path)
+                                        />
+                                    })
+                                    .collect_view()}
+                                {found_paths
+                                    .iter()
+                                    .map(|path| view! {
+                                        <polyline
+                                            class="wordhunt-path-mark wordhunt-path-mark-found"
+                                            style="stroke-width:0.82;"
                                             points=path_points(path)
                                         />
                                     })
@@ -1148,19 +1221,20 @@ fn WordHuntBoard(
                                         />
                                     })
                                     .collect_view()}
-                                {found_paths
-                                    .iter()
+                                {detail_path
+                                    .as_ref()
                                     .map(|path| view! {
                                         <polyline
-                                            class="wordhunt-path-mark wordhunt-path-mark-found"
+                                            class="wordhunt-path-mark wordhunt-path-mark-selected"
+                                            style="stroke-width:0.94;"
                                             points=path_points(path)
                                         />
-                                    })
-                                    .collect_view()}
+                                    })}
                                 {if selected_path.len() > 1 {
                                     view! {
                                         <polyline
                                             class="wordhunt-path-mark wordhunt-path-mark-selected"
+                                            style="stroke-width:0.94;"
                                             points=path_points(&selected_path)
                                         />
                                     }.into_any()
@@ -1270,6 +1344,7 @@ fn WordHuntInfoLine(
 fn WordHuntWordDialog(
     load: RwSignal<DictionaryLoad>,
     selected_detail: RwSignal<Option<String>>,
+    highlighted_path: RwSignal<Option<Vec<Coord>>>,
     close: impl Fn(leptos::ev::MouseEvent) + Copy + Send + Sync + 'static,
 ) -> impl IntoView {
     let word_list_ref = NodeRef::<Div>::new();
@@ -1310,29 +1385,35 @@ fn WordHuntWordDialog(
                                 let word = entry.word.clone();
                                 let found = state.is_found(&word);
                                 let revealed = state.is_revealed(&word) && !found;
-                                (word, found, revealed, false)
+                                (word, found, revealed, false, false)
                             })
                             .collect::<Vec<_>>();
                         word_rows.extend(
                             state
                                 .subwords()
                                 .into_iter()
-                                .map(|word| (word, false, false, true)),
+                                .map(|word| (word, false, false, true, false)),
+                        );
+                        word_rows.extend(
+                            state
+                                .bonus_words()
+                                .into_iter()
+                                .map(|word| (word, false, false, false, true)),
                         );
                         word_rows.sort_by(|(a, ..), (b, ..)| a.cmp(b));
                         let word_rows = word_rows
                             .into_iter()
-                            .map(|(word, found, revealed, subword)| {
+                            .map(|(word, found, revealed, subword, bonus)| {
                                 let letter = word.chars().next().unwrap_or('a').to_ascii_uppercase();
                                 let anchor = seen_letters
                                     .insert(letter)
                                     .then(|| format!("wordhunt-letter-{letter}"));
-                                (word, letter, anchor, found, revealed, subword)
+                                (word, letter, anchor, found, revealed, subword, bonus)
                             })
                             .collect::<Vec<_>>();
                         let present_letters = word_rows
                             .iter()
-                            .map(|(_, letter, _, _, _, _)| *letter)
+                            .map(|(_, letter, _, _, _, _, _)| *letter)
                             .collect::<std::collections::BTreeSet<_>>();
                         let fallback_word = state.puzzle().words.first().map(|entry| entry.word.clone());
                         view! {
@@ -1391,10 +1472,13 @@ fn WordHuntWordDialog(
                                 >
                                     {word_rows
                                         .into_iter()
-                                        .map(|(word, _, anchor, found, revealed, subword)| {
+                                        .map(|(word, _, anchor, found, revealed, subword, bonus)| {
                                             let row_id = anchor.unwrap_or_else(|| format!("wordhunt-word-{word}"));
                                             let selected_word = word.clone();
                                             let click_word = word.clone();
+                                            let click_path = (found || subword || bonus)
+                                                .then(|| state.path_for_word(&word))
+                                                .flatten();
                                             view! {
                                                 <button
                                                     type="button"
@@ -1403,6 +1487,7 @@ fn WordHuntWordDialog(
                                                     class:found=found
                                                     class:revealed=revealed
                                                     class:subword=subword
+                                                    class:bonus=bonus
                                                     class:selected=move || {
                                                         selected_detail.get().as_deref() == Some(selected_word.as_str())
                                                     }
@@ -1413,16 +1498,33 @@ fn WordHuntWordDialog(
                                                             "found"
                                                         } else if subword {
                                                             "subword found"
+                                                        } else if bonus {
+                                                            "bonus found"
                                                         } else if revealed {
                                                             "revealed"
                                                         } else {
                                                             "not found"
                                                         },
                                                     )
-                                                    on:click=move |_| selected_detail.set(Some(click_word.clone()))
+                                                    on:click=move |ev| {
+                                                        let navigate = selected_detail
+                                                            .get_untracked()
+                                                            .as_deref()
+                                                            == Some(click_word.as_str())
+                                                            && click_path.is_some();
+                                                        selected_detail.set(Some(click_word.clone()));
+                                                        if navigate {
+                                                            show_word_highlight(
+                                                                highlighted_path,
+                                                                click_path.clone(),
+                                                                subword || bonus,
+                                                            );
+                                                            close(ev);
+                                                        }
+                                                    }
                                                 >
                                                     <span class="wordhunt-word-status">
-                                                        {if found { "✓" } else if subword { "◇" } else if revealed { "!" } else { "·" }}
+                                                        {if found { "✓" } else if subword { "◇" } else if bonus { "★" } else if revealed { "!" } else { "·" }}
                                                     </span>
                                                     <span class="wordhunt-word-text">{word.to_ascii_uppercase()}</span>
                                                 </button>

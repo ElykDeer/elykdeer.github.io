@@ -3,7 +3,7 @@ use crate::terminal::{GameLaunch, OutputBlock, TerminalContext};
 
 pub struct BubblesCommand;
 
-const BUBBLES_VERSION: &str = "2.x";
+const BUBBLES_VERSION: &str = "2.1.0";
 
 impl Command for BubblesCommand {
     fn name(&self) -> &'static str {

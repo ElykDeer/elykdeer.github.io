@@ -47,7 +47,8 @@ pub fn App() -> impl IntoView {
     let terminal_focused = RwSignal::new(false);
 
     // Keep command execution behind profile hydration so early edits cannot
-    // overwrite stored state. Word assets load independently on game demand.
+    // overwrite stored state. The textarea remains focusable so mobile users
+    // can open the keyboard immediately while the profile read finishes.
     spawn_local(async move {
         let error = match load_profile().await {
             Ok(profile) => {
@@ -480,7 +481,6 @@ pub fn App() -> impl IntoView {
                         <textarea
                             id="terminal-command"
                             class="terminal-input"
-                            disabled={move || !profile_ready.get()}
                             rows={move || command_input.with(|value| value.matches('\n').count() + 1).to_string()}
                             autocomplete="off"
                             autocapitalize="none"

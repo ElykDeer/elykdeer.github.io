@@ -583,7 +583,7 @@ mod tests {
 
         assert_eq!(
             run_line(&mut ctx, "bubbles version"),
-            vec![OutputBlock::Text("Bubbles 2.x".to_string())]
+            vec![OutputBlock::Text("Bubbles 2.1.0".to_string())]
         );
     }
 
@@ -668,7 +668,7 @@ mod tests {
 
         assert_eq!(
             run_line(&mut ctx, "textropolis version"),
-            vec![OutputBlock::Text("Textropolis 1.x".to_string())]
+            vec![OutputBlock::Text("Textropolis 1.0.0".to_string())]
         );
     }
 
@@ -691,7 +691,7 @@ mod tests {
 
         assert_eq!(
             run_line(&mut ctx, "wordhunt version"),
-            vec![OutputBlock::Text("Word Hunt 1.x".to_string())]
+            vec![OutputBlock::Text("Word Hunt 1.2.0".to_string())]
         );
     }
 
